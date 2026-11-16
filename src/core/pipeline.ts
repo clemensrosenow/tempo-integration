@@ -38,8 +38,11 @@
  *   exist are deleted too.
  * - Stability: if no signal other than 'periodic' arrived and the current plan
  *   passes Check, nothing changes and llm.place is not called.
- * - block-deleted-by-user carries no time range, so the deleted slot cannot be
- *   avoided; the task is simply re-planned (cause "you removed a block").
+ * - block-deleted-by-user: the task is re-planned (cause "you removed a block")
+ *   and avoids the deleted slot in that run — deleting means "not there".
+ * - "Lateness already accepted" (blocks after the due are kept without a new
+ *   question) never applies in a run where the task or its parent changed:
+ *   a due date pulled earlier must be re-checked.
  * - LLM failures (exceptions) never break planning: understand falls back to a
  *   neutral estimate (not cached), place to greedy, explain to templates.
  * - Questions refreshed under an existing queued id are returned in
@@ -302,6 +305,14 @@ export async function runPlanningPipeline(input: PlanInput, llm: LlmPort): Promi
     taskQuestions,
     cause: globalCause(run.input.signals),
     acceptedRanges: run.virtualPinned,
+    editedTaskIds: new Set(run.input.tasks.filter((t) => changedThisRun(run, t)).map((t) => t.id)),
+    rescueEventIds: new Set(
+      diff.changes.flatMap((c) => {
+        if (c.op !== 'move') return [];
+        const due = itemById.get(c.taskId)?.due;
+        return due && c.from.end.getTime() > due.getTime() && c.to.end.getTime() <= due.getTime() ? [c.eventId] : [];
+      }),
+    ),
     ...(run.openQuestion ? { openQuestion: run.openQuestion } : {}),
     ...(run.followUp ? { followUp: run.followUp } : {}),
     queuedQuestions: input.queuedQuestions,
@@ -349,6 +360,14 @@ function processAnswers(run: Run): void {
     }
     const answer = s.type === 'question-timeout' ? 'timeout' : s.answer;
     const res = handleAnswer(q, answer, { now: run.now, learned: run.learned, estimates: run.estimates, tz: run.tz });
+    if (answer === 'yes' && q.kind === 'missed-due') {
+      const t = run.tasks.get(q.taskId);
+      const due = t ? effectiveDue(run, t) : undefined;
+      if (due) {
+        run.learned.acceptedLate = { ...(run.learned.acceptedLate ?? {}), [q.taskId]: due.toISOString() };
+        run.learnedChanged = true;
+      }
+    }
     run.log.push(...res.log);
     run.updatedQuestions.push(res.updated);
     run.learnedChanged ||= res.learnedChanged;
@@ -392,6 +411,16 @@ function processTaskSignals(run: Run): void {
     }
     if (s.type === 'block-deleted-by-user') run.taskCauses.set(s.taskId, 'you removed a block');
   }
+}
+
+function deletedRanges(run: Run, taskId: string): TimeRange[] {
+  return run.input.signals.flatMap((s) => (s.type === 'block-deleted-by-user' && s.taskId === taskId && s.range ? [s.range] : []));
+}
+
+function changedThisRun(run: Run, t: Task): boolean {
+  return run.input.signals.some(
+    (s) => s.type === 'tasks-changed' && (s.taskIds.includes(t.id) || (t.parentId !== undefined && s.taskIds.includes(t.parentId))),
+  );
 }
 
 function newTaskCause(run: Run, taskId: string): string {
@@ -642,8 +671,13 @@ function buildItems(run: Run, current: readonly CurrentBlock[], pinnedTasks: Rea
       deepWork: est.deepWork,
       ...(due ? { due } : {}),
       ...(t.parentId ? { orderGroup: t.parentId, orderIndex: subtasks.findIndex((s) => s.id === t.id) } : {}),
-      lateOk: due !== undefined && futureBlocks.some((b) => b.end.getTime() > due.getTime()),
-      avoid: [],
+      // Only lateness the user explicitly accepted (Yes to a late proposal, same due) is kept without asking.
+      lateOk:
+        due !== undefined &&
+        !changedThisRun(run, t) &&
+        run.learned.acceptedLate?.[t.id] === due.toISOString() &&
+        futureBlocks.some((b) => b.end.getTime() > due.getTime()),
+      avoid: deletedRanges(run, t.id),
     });
   }
   return items;

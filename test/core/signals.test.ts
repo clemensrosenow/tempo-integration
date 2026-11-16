@@ -83,7 +83,7 @@ describe('detectSignals', () => {
     ];
     const res = detectSignals({ prev, events: after, tasks, now, handledEndedBlocks: [] });
     expect(res.signals).toEqual([
-      { type: 'block-deleted-by-user', eventId: 'b-b', taskId: 'b' },
+      { type: 'block-deleted-by-user', eventId: 'b-b', taskId: 'b', range: { start: at('2026-11-16T15:00'), end: at('2026-11-16T16:00') } },
       { type: 'block-ended-open', eventId: 'b-c', taskId: 'c' },
       {
         type: 'block-moved-by-user',
@@ -109,7 +109,7 @@ describe('detectSignals', () => {
     const res = detectSignals({ prev, events: [gone(before[0]!), gone(before[1]!)], tasks, now, handledEndedBlocks: [] });
     expect(res.signals).toEqual([
       { type: 'fixed-event-changed', eventId: 'lecture' },
-      { type: 'block-deleted-by-user', eventId: 'b-a', taskId: 'a' },
+      { type: 'block-deleted-by-user', eventId: 'b-a', taskId: 'a', range: { start: at('2026-11-16T14:00'), end: at('2026-11-16T15:00') } },
     ]);
   });
 });

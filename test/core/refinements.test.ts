@@ -156,3 +156,64 @@ describe('question wording', () => {
     expect(q.description).toMatch(/only fits before its due \(Thu 19 Nov\) if other work moves.*To make room, Tempo moves 'Exam prep' to later/s);
   });
 });
+
+describe('user edits', () => {
+  it('a block the user deleted is re-planned somewhere else, not in the same slot', async () => {
+    const out = await runPlanningPipeline(
+      planInput({
+        now: '2026-11-16T08:00',
+        tasks: [task({ id: 'mail', title: 'Reply to landlord' })],
+        estimates: { mail: estimate('mail', { durationMin: 30, minChunkMin: 30 }) },
+        signals: [{ type: 'block-deleted-by-user', eventId: 'gone', taskId: 'mail', range: { start: at('2026-11-16T09:00'), end: at('2026-11-16T09:30') } }],
+      }),
+      stubLlm(),
+    );
+    const [c] = creates(out.apply, 'mail');
+    expect(c).toBeDefined();
+    expect(show(target(c!)!)).not.toBe('2026-11-16T09:00–09:30');
+    expect(reasonOf(c!)).toMatch(/you removed a block/);
+  });
+
+  it('a due date pulled earlier re-checks blocks that are now too late', async () => {
+    const out = await runPlanningPipeline(
+      planInput({
+        now: '2026-11-16T08:00',
+        events: [block({ id: 'o', taskId: 'outline', title: 'Write outline', start: '2026-11-23T10:00', end: '2026-11-23T11:30' })],
+        tasks: [task({ id: 'paper', title: 'Seminar paper', due: '2026-11-19' }), task({ id: 'outline', title: 'Write outline', parentId: 'paper' })],
+        estimates: { outline: estimate('outline', { durationMin: 90, minChunkMin: 45 }) },
+        signals: [{ type: 'tasks-changed', taskIds: ['paper'] }],
+      }),
+      stubLlm(),
+    );
+    const [m] = moves(out.apply, 'outline');
+    expect(m).toBeDefined();
+    expect(m!.to.end.getTime()).toBeLessThanOrEqual(at('2026-11-20T00:00').getTime());
+  });
+});
+
+describe('accepted lateness', () => {
+  const input = (acceptedLate: Record<string, string>) =>
+    planInput({
+      now: '2026-11-16T08:00',
+      events: [block({ id: 'd', taskId: 'draft', title: 'Draft intro', start: '2026-11-24T10:00', end: '2026-11-24T11:30' })],
+      tasks: [task({ id: 'draft', title: 'Draft intro', due: '2026-11-19' })],
+      estimates: { draft: estimate('draft', { durationMin: 90, minChunkMin: 45 }) },
+      prefs: (() => {
+        const p = planInput({ now: '2026-11-16T08:00' }).prefs;
+        return { ...p, learned: { ...p.learned, acceptedLate } };
+      })(),
+      signals: [{ type: 'periodic' }],
+    });
+
+  it('a block after the due is not silently accepted', async () => {
+    const out = await runPlanningPipeline(input({}), stubLlm());
+    const fixed = moves(out.apply, 'draft').length > 0 || out.questions.some((q) => q.taskId === 'draft');
+    expect(fixed).toBe(true);
+  });
+
+  it('stays put when the user said Yes to exactly this lateness', async () => {
+    const out = await runPlanningPipeline(input({ draft: at('2026-11-20T00:00').toISOString() }), stubLlm());
+    expect(out.apply).toEqual([]);
+    expect(out.questions).toEqual([]);
+  });
+});

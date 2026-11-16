@@ -79,6 +79,10 @@ export interface DecideInput {
    * these ranges are part of that decision, not a new big change.
    */
   acceptedRanges?: readonly { start: Date; end: Date }[];
+  /** Tasks the user edited this run (e.g. due pulled earlier): their moves follow the user's own edit. */
+  editedTaskIds?: ReadonlySet<string>;
+  /** Moves that bring a block from after its task's due to before it (repairs, not disruption). */
+  rescueEventIds?: ReadonlySet<string>;
   /** Question that stays open after this run (not answered now). */
   openQuestion?: Question;
   /** Maybe follow-up that the engine opens next. */
@@ -103,7 +107,10 @@ export function decide(input: DecideInput): DecideOutput {
   const accepted = input.acceptedRanges ?? [];
   const big = detectBigChange(
     input.planned.filter(
-      (c) => !(c.op === 'move' && accepted.some((r) => r.start.getTime() < c.from.end.getTime() && c.from.start.getTime() < r.end.getTime())),
+      (c) =>
+        !(c.op === 'move' && accepted.some((r) => r.start.getTime() < c.from.end.getTime() && c.from.start.getTime() < r.end.getTime())) &&
+        !(c.op === 'move' && input.editedTaskIds?.has(c.taskId)) &&
+        !(c.op === 'move' && input.rescueEventIds?.has(c.eventId)),
     ),
   );
   if (big) {

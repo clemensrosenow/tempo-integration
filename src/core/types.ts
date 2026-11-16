@@ -183,6 +183,11 @@ export interface LearnedPreferences {
   taskPriority: Record<string, number>;
   /** RSVP "No" answers: proposals the user rejected (task id -> count). */
   rejectedProposals: Record<string, number>;
+  /**
+   * Lateness the user accepted by answering Yes to a missed-due question:
+   * task id -> the due (ISO) it was accepted for. A changed due date voids it.
+   */
+  acceptedLate?: Record<string, string>;
   /** Human-readable log, newest last, e.g. "Writing tasks take you ~1.5x longer". */
   notes: string[];
 }
@@ -194,6 +199,7 @@ export function emptyLearned(): LearnedPreferences {
     hourAffinity: {},
     taskPriority: {},
     rejectedProposals: {},
+    acceptedLate: {},
     notes: [],
   };
 }
@@ -279,7 +285,8 @@ export type Signal =
       from: TimeRange;
       to: TimeRange;
     }
-  | { type: 'block-deleted-by-user'; eventId: string; taskId: string }
+  /** `range`: where the deleted block was (Tempo avoids that slot for the task this run). */
+  | { type: 'block-deleted-by-user'; eventId: string; taskId: string; range?: TimeRange }
   | {
       /** A block ended but its task is not checked off (E6). */
       type: 'block-ended-open';

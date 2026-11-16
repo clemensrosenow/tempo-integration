@@ -161,7 +161,14 @@ function deletedBlockSignals(prev: Snapshot, events: readonly CalendarEvent[], n
   for (const p of prev.events) {
     if (!p.tempoTaskId || Date.parse(p.end) <= now.getTime()) continue;
     const e = live.get(p.id);
-    if (!e || e.status === 'cancelled') out.push({ type: 'block-deleted-by-user', eventId: p.id, taskId: p.tempoTaskId });
+    if (!e || e.status === 'cancelled') {
+      out.push({
+        type: 'block-deleted-by-user',
+        eventId: p.id,
+        taskId: p.tempoTaskId,
+        range: { start: new Date(p.start), end: new Date(p.end) },
+      });
+    }
   }
   return out;
 }

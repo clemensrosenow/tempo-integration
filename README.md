@@ -1,0 +1,90 @@
+# Tempo — calendar integration (headless)
+
+Tempo plans your Google Tasks as time blocks in a separate **"Tempo" calendar**
+inside the Google Calendar you already use, and quietly repairs the plan when
+your day slips. There is no UI: every interaction happens through native
+Google Calendar features (events, descriptions, invitations with Yes/No/Maybe,
+drag & resize, the calendar show/hide checkbox). This repository is the
+working integration behind the spec in [`docs/tempo-spec.md`](docs/tempo-spec.md).
+
+Sign-in, calendar reading/writing, invitations and task fetching go **only
+through Google** (OAuth 2.0, Google Calendar API, Google Tasks API).
+
+## How it works
+
+```
+Google Tasks ─┐                                 ┌─► Tempo calendar (blocks + reasons)
+              ├─► detect signals ─► pipeline ───┤
+Google Cal ───┘   (diff, RSVPs,     Understand  └─► invitation from the Tempo
+                   timeouts,        Find gaps        organizer account ("Tempo asks: …")
+                   debounce)        Place
+                                    Check (≤2 retries → greedy fallback)
+                                    Decide (auto vs. ask)
+                                    Explain
+```
+
+| Spec | Where |
+|---|---|
+| E1 one-step start | `tempo login` + `tempo setup` (`src/engine/setup.ts`, `src/onboarding/infer.ts`) |
+| E2/E13 Tempo calendar, read all / write one | `src/google/calendarAdapter.ts` |
+| E3 task understanding | `src/llm/*` (Claude, Gemini or heuristic fallback) |
+| E4 subtasks | Google Tasks `parent`/`position` → `src/core` placement order |
+| E5 continuous planning | `tempo run` (`src/engine/daemon.ts`): polling + optional Calendar push |
+| E6 quiet repair, E7 fixed events, E8 stability | `src/core/signals.ts`, `gaps.ts`, `diff.ts`, engine debounce |
+| E9/E10 ask only when it matters, RSVP semantics | `src/core/decide.ts`, `questions.ts`, `src/google/inviteAdapter.ts` |
+| E11 transparency | reason line in each block's description |
+| E12 learning by doing | `src/core/learning.ts` ("Tempo learned: …" lines) |
+
+## Setup
+
+Requirements: Node ≥ 22, a Google account (the student), and a second Google
+account that acts as the **Tempo organizer** (Google only sends invitations
+from an organizer different from the attendee).
+
+1. Create the Google Cloud OAuth client — see [`docs/google-setup.md`](docs/google-setup.md).
+2. Install and configure:
+   ```bash
+   npm install
+   cp .env.example .env   # optional: LLM key, data dir, horizon
+   ```
+3. Connect both accounts and onboard:
+   ```bash
+   npm run tempo -- login                # student account
+   npm run tempo -- login --organizer    # Tempo organizer account
+   npm run tempo -- setup                # shows inferred hours/focus/sleep/calendars, confirm with Enter
+   ```
+4. Keep it running:
+   ```bash
+   npm run tempo -- run
+   ```
+
+Other commands: `plan [--force]`, `status`, `tasks`, `calendars`, `clear-blocks`, `logout [--organizer]`.
+
+### LLM
+
+The pipeline's Understand/Place/Explain steps use an LLM when a key is set
+(`TEMPO_ANTHROPIC_API_KEY` for Claude, or `GEMINI_API_KEY` for Gemini; force
+with `TEMPO_LLM=anthropic|gemini|heuristic`). Without a key Tempo runs on a
+deterministic heuristic + greedy placer, so the integration always works.
+Every LLM answer is schema-validated and checked by code; invalid answers fall
+back to the deterministic path.
+
+## Using it (the interaction contract)
+
+- **Plan:** add a Google Task (with an optional due date, subtasks for steps) → a block appears in the Tempo calendar.
+- **Done:** check off the task → its future blocks disappear.
+- **Running late:** extend the meeting in your calendar → following blocks move; the next hour stays as is.
+- **Correct Tempo:** drag or resize a block → it stays where you put it and the description says what Tempo learned.
+- **Decisions:** for missed due dates, dropped tasks, unclear priority or big changes (>3 blocks / >2 days) you get an invitation "Tempo asks: …" at the proposed slot. Yes = apply · No = keep as is · Maybe = other time. No answer 1 h before the slot = No.
+
+## Development
+
+```bash
+npm test          # vitest: core pipeline, Google mapping/adapters (mocked), LLM, onboarding, engine e2e
+npm run typecheck
+npm run build     # → dist/, `node dist/cli.js`
+```
+
+Tests replace Google with in-memory fakes and the LLM with stubs (spec
+"Testing Decisions"); no network is used. Runtime state (OAuth tokens,
+preferences, question queue) lives in `.tempo/` (git-ignored).

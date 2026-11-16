@@ -15,6 +15,7 @@ import type { Question, ResponseStatus } from '../core/types.js';
 import type { InvitePort } from '../core/ports.js';
 import { createCalendarApi, type CalendarApi } from './api.js';
 import { toInviteEvent, toResponseStatus } from './mapping.js';
+import { insertIdempotent, newEventId } from './calendarAdapter.js';
 import { errorMessage, isStatus, withRetry, type RetryOptions } from './retry.js';
 
 export type SendUpdates = 'all' | 'externalOnly' | 'none';
@@ -58,8 +59,13 @@ export class GoogleInviteAdapter implements InvitePort {
       ...(this.opts.timeZone !== undefined ? { timeZone: this.opts.timeZone } : {}),
       ...(this.opts.reminderMinutes !== undefined ? { reminderMinutes: this.opts.reminderMinutes } : {}),
     });
-    const { data } = await this.call(() =>
-      this.api.events.insert({ calendarId: this.calendarId, sendUpdates: 'all', requestBody }),
+    const id = newEventId();
+    const data = await insertIdempotent(
+      () =>
+        this.call(() =>
+          this.api.events.insert({ calendarId: this.calendarId, sendUpdates: 'all', requestBody: { ...requestBody, id } }),
+        ),
+      () => this.call(() => this.api.events.get({ calendarId: this.calendarId, eventId: id })),
     );
     if (!data.id) throw new Error('events.insert returned no id for the invitation');
     return data.id;

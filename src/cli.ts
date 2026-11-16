@@ -16,7 +16,7 @@ import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import { DateTime } from 'luxon';
 import { loadConfig } from './config.js';
-import { createGoogleAdapters, signIn, signOut } from './google/index.js';
+import { createGoogleAdapters, isInvalidGrant, signIn, signOut } from './google/index.js';
 import { createLlm } from './llm/index.js';
 import { FileStateStore } from './store/fileStore.js';
 import { TempoEngine, errorMessage, type TickReport } from './engine/engine.js';
@@ -131,6 +131,7 @@ async function main(argv: string[]): Promise<void> {
         watch: g.watch,
         store,
         log,
+        describeError,
       });
       return;
     }
@@ -250,7 +251,17 @@ function printReport(r: TickReport): void {
   for (const q of r.questionsOpened) console.log(`  ? ${q.title}`);
 }
 
+function describeError(err: unknown): string {
+  if (isInvalidGrant(err)) {
+    return (
+      'Google sign-in expired or was revoked (apps in OAuth "testing" mode get 7-day tokens). ' +
+      'Run `npm run tempo -- login` (and `npm run tempo -- login --organizer`) again.'
+    );
+  }
+  return errorMessage(err);
+}
+
 main(process.argv.slice(2)).catch((err: unknown) => {
-  console.error(`tempo: ${errorMessage(err)}`);
+  console.error(`tempo: ${describeError(err)}`);
   process.exitCode = 1;
 });

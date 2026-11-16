@@ -32,6 +32,7 @@ import type {
 import { DEBOUNCE_MS } from '../core/types.js';
 import { runPlanningPipeline } from '../core/pipeline.js';
 import { detectSignals } from '../core/signals.js';
+import { handleAnswer } from '../core/questions.js';
 
 export interface EngineConfig {
   horizonDays: number;
@@ -40,8 +41,10 @@ export interface EngineConfig {
   maxDeferMs?: number;
   /** Re-plan without any signal at most this often (keeps the plan fresh as time passes). */
   periodicReplanMs?: number;
-  /** How far back events are read (for "block ended while task open" and worked time). */
+  /** How far back non-Tempo events are read (for "block ended while task open"). */
   lookbackHours?: number;
+  /** How far back Tempo blocks are read, so minutes already worked on long tasks are counted. */
+  tempoLookbackDays?: number;
 }
 
 export interface EngineDeps {
@@ -78,6 +81,12 @@ const USER_SIGNAL_TYPES = new Set<Signal['type']>([
   'block-moved-by-user',
   'block-deleted-by-user',
 ]);
+
+/** Tempo's own writes during one tick, used to build the post-write snapshot. */
+interface OwnWrites {
+  upserted: Map<string, CalendarEvent>;
+  deleted: Set<string>;
+}
 
 export class TempoEngine {
   private readonly clock: () => Date;
@@ -147,7 +156,7 @@ export class TempoEngine {
     // 4. Debounce (E8) ----------------------------------------------------------
     const userSignals = signals.filter((s) => USER_SIGNAL_TYPES.has(s.type));
     if (userSignals.length > 0 && !opts.force) {
-      const lastEdit = latestUserEdit(events, tasks, state.lastSnapshot?.takenAt);
+      const lastEdit = latestUserEdit(events, tasks, state.lastSnapshot);
       const debounceMs = config.debounceMs ?? DEBOUNCE_MS;
       const maxDeferMs = config.maxDeferMs ?? 10 * 60_000;
       const pendingSince = state.pendingSince ? new Date(state.pendingSince) : now;
@@ -170,6 +179,7 @@ export class TempoEngine {
         report.outcome = 'idle';
         state.lastSnapshot = detected.snapshot;
         state.handledEndedBlocks = detected.handledEndedBlocks;
+        delete state.pendingSince;
         await store.save(state);
         return report;
       }
@@ -194,14 +204,28 @@ export class TempoEngine {
     // 7. Apply changes to the Tempo calendar ----------------------------------
     const tasksById = new Map(tasks.map((t) => [t.id, t]));
     const eventsById = new Map(events.map((e) => [e.id, e]));
+    const writes: OwnWrites = { upserted: new Map(), deleted: new Set() };
     for (const change of output.apply) {
       try {
-        await this.applyChange(tempoCalendarId, change, tasksById, eventsById);
+        await this.applyChange(tempoCalendarId, change, tasksById, eventsById, writes);
         report.applied.push(change);
       } catch (err) {
         const error = errorMessage(err);
         report.failed.push({ change, error });
         say(`apply ${change.op} failed: ${error}`);
+      }
+    }
+
+    // 7b. Keep block titles in sync with renamed Google Tasks.
+    for (const ev of events) {
+      if (ev.tempo?.kind !== 'block' || ev.end <= now || writes.deleted.has(ev.id)) continue;
+      const task = tasksById.get(ev.tempo.taskId);
+      const current = writes.upserted.get(ev.id) ?? ev;
+      if (!task || task.status !== 'needsAction' || current.title === task.title) continue;
+      try {
+        writes.upserted.set(ev.id, await calendar.updateBlock(tempoCalendarId, ev.id, { title: task.title }));
+      } catch (err) {
+        if (!isNotFound(err)) say(`could not rename block ${ev.id}: ${errorMessage(err)}`);
       }
     }
 
@@ -211,24 +235,31 @@ export class TempoEngine {
     report.questionsClosed = await this.closeQuestions(state, output.updatedQuestions, now, say);
     // The pipeline marks the most severe new question 'open' ("send now"); the
     // engine sends it only after a successful invitation, so it is queued first.
-    const preferred = new Set(output.questions.filter((q) => q.status === 'open').map((q) => q.id));
+    // A Maybe follow-up ("other time") must be asked next (E10), before any older queued question.
+    const maybeTasks = new Set(output.updatedQuestions.filter((q) => q.status === 'maybe').map((q) => q.taskId));
+    const preferred = new Set(
+      output.questions.filter((q) => q.status === 'open' || maybeTasks.has(q.taskId)).map((q) => q.id),
+    );
     for (const q of output.questions) {
       if (!state.questions.some((existing) => existing.id === q.id)) {
         state.questions.push({ ...q, status: q.status === 'open' ? 'queued' : q.status });
       }
     }
-    const opened = await this.openNextQuestion(state, tempoCalendarId, userEmail, now, say, preferred);
+    const opened = await this.openNextQuestion(state, tempoCalendarId, userEmail, now, say, preferred, writes);
     if (opened) report.questionsOpened.push(opened);
 
-    // 9. Snapshot after our own writes, so they are not mistaken for user edits.
-    const wrote = report.applied.length > 0 || opened !== undefined;
-    const finalEvents = wrote ? await this.fetchEvents(state, now) : events;
+    // 9. Snapshot = what we read + exactly our own writes. Not a re-fetch: user edits
+    //    made while this tick ran must still show up as changes on the next tick.
+    //    `takenAt` = detection instant, so blocks ending during the tick are not missed.
+    const finalEvents = [
+      ...events.filter((e) => !writes.deleted.has(e.id) && !writes.upserted.has(e.id)),
+      ...writes.upserted.values(),
+    ];
     const finalSnapshot = detectSignals({
       prev: undefined,
       events: finalEvents,
       tasks,
-      // Taken *after* our writes so their `updated` stamps are not seen as user edits.
-      now: this.clock(),
+      now,
       handledEndedBlocks: detected.handledEndedBlocks,
     });
     state.lastSnapshot = finalSnapshot.snapshot;
@@ -251,13 +282,19 @@ export class TempoEngine {
 
   private async fetchEvents(state: TempoState, now: Date): Promise<CalendarEvent[]> {
     const prefs = state.prefs!;
+    const tempoId = state.tempoCalendarId!;
+    const end = new Date(now.getTime() + this.deps.config.horizonDays * 86_400_000);
     const lookbackMs = (this.deps.config.lookbackHours ?? 24) * 3_600_000;
-    const range = {
-      start: new Date(now.getTime() - lookbackMs),
-      end: new Date(now.getTime() + this.deps.config.horizonDays * 86_400_000),
-    };
-    const ids = unique([...prefs.selectedCalendarIds, state.tempoCalendarId!]);
-    return this.deps.calendar.listEvents(ids, range);
+    const tempoLookbackMs = (this.deps.config.tempoLookbackDays ?? 30) * 86_400_000;
+    const others = unique(prefs.selectedCalendarIds).filter((id) => id !== tempoId);
+    const [fixed, blocks] = await Promise.all([
+      others.length
+        ? this.deps.calendar.listEvents(others, { start: new Date(now.getTime() - lookbackMs), end })
+        : Promise.resolve([]),
+      // Long lookback for Tempo blocks: past blocks = minutes already worked on a task.
+      this.deps.calendar.listEvents([tempoId], { start: new Date(now.getTime() - tempoLookbackMs), end }),
+    ]);
+    return [...fixed, ...blocks];
   }
 
   private async questionSignals(state: TempoState, now: Date, say: (l: string) => void): Promise<Signal[]> {
@@ -288,27 +325,33 @@ export class TempoEngine {
     change: EventChange,
     tasksById: Map<string, Task>,
     eventsById: Map<string, CalendarEvent>,
+    writes: OwnWrites,
   ): Promise<void> {
     const { calendar } = this.deps;
     switch (change.op) {
-      case 'create':
-        await calendar.createBlock(tempoCalendarId, change.block);
+      case 'create': {
+        const ev = await calendar.createBlock(tempoCalendarId, change.block);
+        writes.upserted.set(ev.id, ev);
         return;
+      }
       case 'delete':
         try {
           await calendar.deleteBlock(tempoCalendarId, change.eventId);
         } catch (err) {
           if (!isNotFound(err)) throw err;
         }
+        writes.deleted.add(change.eventId);
+        writes.upserted.delete(change.eventId);
         return;
       case 'move':
         try {
-          await calendar.updateBlock(tempoCalendarId, change.eventId, {
+          const ev = await calendar.updateBlock(tempoCalendarId, change.eventId, {
             start: change.to.start,
             end: change.to.end,
             reason: change.reason,
             learned: change.learned,
           });
+          writes.upserted.set(ev.id, ev);
         } catch (err) {
           if (!isNotFound(err)) throw err;
           // The block vanished (e.g. replaced by a question or deleted meanwhile): recreate it.
@@ -323,7 +366,9 @@ export class TempoEngine {
             reason: change.reason,
             learned: change.learned,
           };
-          await calendar.createBlock(tempoCalendarId, block);
+          const ev = await calendar.createBlock(tempoCalendarId, block);
+          writes.deleted.add(change.eventId);
+          writes.upserted.set(ev.id, ev);
         }
         return;
     }
@@ -367,8 +412,21 @@ export class TempoEngine {
     userEmail: string,
     now: Date,
     say: (l: string) => void,
-    preferred: Set<string> = new Set(),
+    preferred: Set<string>,
+    writes: OwnWrites,
   ): Promise<Question | undefined> {
+    // A question that can never be asked counts as "No" (D12) — with its learning
+    // effects, so the pipeline does not hold the same proposal back forever.
+    const expireUnasked = (q: Question, why: string) => {
+      const res = handleAnswer(q, 'timeout', {
+        now,
+        learned: state.prefs!.learned,
+        estimates: state.estimates,
+        tz: state.prefs!.timezone,
+      });
+      Object.assign(q, res.updated, { status: 'expired' });
+      say(why);
+    };
     if (state.questions.some((q) => q.status === 'open')) return undefined;
     const queue = state.questions
       .filter((q) => q.status === 'queued')
@@ -379,21 +437,24 @@ export class TempoEngine {
       );
     for (const q of queue) {
       if (new Date(q.answerBy).getTime() <= now.getTime()) {
-        q.status = 'expired';
-        say(`queued question "${q.title}" expired before it could be asked`);
+        expireUnasked(q, `queued question "${q.title}" expired before it could be asked`);
         continue;
       }
       if (!this.deps.invites) {
-        q.status = 'expired';
-        say(`no organizer account connected — cannot ask "${q.title}", keeping the plan (run \`tempo login --organizer\`)`);
+        expireUnasked(
+          q,
+          `no organizer account connected — cannot ask "${q.title}", keeping the plan (run \`tempo login --organizer\`)`,
+        );
         continue;
       }
       // The invitation replaces the affected block(s) while open (D11).
       for (const eventId of q.replacedEventIds ?? []) {
         try {
           await this.deps.calendar.deleteBlock(tempoCalendarId, eventId);
+          writes.deleted.add(eventId);
         } catch (err) {
-          if (!isNotFound(err)) say(`could not hide block ${eventId}: ${errorMessage(err)}`);
+          if (isNotFound(err)) writes.deleted.add(eventId);
+          else say(`could not hide block ${eventId}: ${errorMessage(err)}`);
         }
       }
       try {
@@ -402,11 +463,11 @@ export class TempoEngine {
         say(`asked: "${q.title}" (answer by ${new Date(q.answerBy).toISOString()})`);
         return q;
       } catch (err) {
-        say(`sending invitation failed: ${errorMessage(err)} — restoring blocks, question expired`);
         for (const block of q.replacedBlocks ?? []) {
-          await this.deps.calendar.createBlock(tempoCalendarId, block).catch(() => undefined);
+          const ev = await this.deps.calendar.createBlock(tempoCalendarId, block).catch(() => undefined);
+          if (ev) writes.upserted.set(ev.id, ev);
         }
-        q.status = 'expired';
+        expireUnasked(q, `sending invitation failed: ${errorMessage(err)} — blocks restored, plan kept`);
       }
     }
     return undefined;
@@ -428,13 +489,21 @@ export function rsvpToAnswer(r: ResponseStatus): 'yes' | 'no' | 'maybe' | undefi
   }
 }
 
-/** Most recent `updated` of any event/task changed after the last snapshot. */
-function latestUserEdit(events: CalendarEvent[], tasks: Task[], since?: string): Date | undefined {
-  const sinceMs = since ? new Date(since).getTime() : 0;
+/**
+ * Most recent `updated` stamp among events/tasks that differ from the last
+ * snapshot. Tempo's own writes are part of the snapshot (same `updated`), so
+ * they never count as user edits — no clock comparison between us and Google.
+ */
+function latestUserEdit(events: CalendarEvent[], tasks: Task[], prev: TempoState['lastSnapshot']): Date | undefined {
+  const seenEvents = new Set((prev?.events ?? []).map((e) => `${e.id}|${new Date(e.updated).getTime()}`));
+  const seenTasks = new Set((prev?.tasks ?? []).map((t) => `${t.id}|${new Date(t.updated).getTime()}`));
   let latest = 0;
-  // `>=`: an edit in the same millisecond as the previous snapshot still counts.
-  for (const e of events) if (e.updated.getTime() >= sinceMs) latest = Math.max(latest, e.updated.getTime());
-  for (const t of tasks) if (t.updated.getTime() >= sinceMs) latest = Math.max(latest, t.updated.getTime());
+  for (const e of events) {
+    if (!seenEvents.has(`${e.id}|${e.updated.getTime()}`)) latest = Math.max(latest, e.updated.getTime());
+  }
+  for (const t of tasks) {
+    if (!seenTasks.has(`${t.id}|${t.updated.getTime()}`)) latest = Math.max(latest, t.updated.getTime());
+  }
   return latest > 0 ? new Date(latest) : undefined;
 }
 

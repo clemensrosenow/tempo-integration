@@ -21,6 +21,8 @@ export interface DaemonOptions {
   watch?: WatchApi;
   store: StateStore;
   log: (line: string) => void;
+  /** Turns errors into actionable messages (e.g. expired Google sign-in). */
+  describeError?: (err: unknown) => string;
   /** Resolves when the daemon should stop (default: SIGINT/SIGTERM). */
   until?: Promise<void>;
 }
@@ -35,13 +37,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       const r = await engine.tick();
       if (r.outcome !== 'idle') log(`${why}: ${r.outcome}, ${r.applied.length} change(s)`);
     } catch (err) {
-      log(`${why}: tick failed: ${errorMessage(err)}`);
+      log(`${why}: tick failed: ${(opts.describeError ?? errorMessage)(err)}`);
     }
   };
 
   // Calendar push notifications (optional).
   let server: { close(): void } | undefined;
-  const channels: Array<{ id: string; resourceId: string; expiration: string }> = [];
+  const channels: Array<{ id: string; resourceId: string; expiration: string; calendarId: string }> = [];
   if (opts.webhook && opts.watch) {
     const watch = opts.watch;
     let pending: NodeJS.Timeout | undefined;
@@ -57,7 +59,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     // Channels expire (Google sets the TTL); renew each one an hour before it does.
     const startChannel = async (calendarId: string): Promise<void> => {
       try {
-        const ch = await watch.start(calendarId, publicUrl, `tempo-${randomId()}`);
+        const ch = { ...(await watch.start(calendarId, publicUrl, `tempo-${randomId()}`)), calendarId };
         channels.push(ch);
         log(`watching ${calendarId} until ${ch.expiration || 'unknown'}`);
         const expiresAt = ch.expiration ? new Date(ch.expiration).getTime() : NaN;
@@ -77,7 +79,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     };
     for (const calendarId of opts.calendarIds) await startChannel(calendarId);
     const state = await opts.store.load();
-    state.channels = channels.map((c, i) => ({ ...c, calendarId: opts.calendarIds[i] ?? '' }));
+    state.channels = channels.map((c) => ({ ...c }));
     await opts.store.save(state);
   }
 

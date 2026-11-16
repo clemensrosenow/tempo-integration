@@ -26,7 +26,11 @@ Each module also lists its decisions in a top-of-file comment.
 ## Engine (src/engine)
 
 - **Debounce (E8).** If user edits happened less than 90 s ago, the tick waits without advancing its snapshot, so a burst of drags becomes one re-plan. After 10 min Tempo plans anyway.
-- **No self-echo.** After writing, the engine re-reads the calendar and snapshots it, so Tempo's own writes are not mistaken for user edits.
+- **No self-echo.** The snapshot for the next tick is what Tempo read plus exactly what it wrote, built from the API responses. It is not a re-fetch, because a re-fetch would swallow edits the user made while the tick ran. The debounce compares fingerprints (id + `updated`), not clocks, so Tempo's own writes never count as user edits.
+- **Worked time.** Tempo blocks are read back 30 days, so minutes already worked on multi-day tasks are subtracted. Other calendars are read back 24 h.
+- **Unaskable questions.** A question that can't be sent (no organizer account, send error, deadline passed) gets full "No" semantics, learning included, so Tempo doesn't hold or re-raise the same proposal every tick.
+- **Renamed tasks.** Renaming a Google Task renames its future blocks.
+- **Idempotent writes.** Tempo picks event ids itself (base32hex). If a retried insert gets a 409, the earlier attempt succeeded, so there are no duplicate blocks or invitations.
 - **Periodic re-plan.** Every 15 min Tempo re-plans even without changes, because time passes and the lock window moves. Most of these runs change nothing.
 - **Invitations.**
   - Questions go out as invitations from the separate organizer account (Google requires organizer ≠ attendee).

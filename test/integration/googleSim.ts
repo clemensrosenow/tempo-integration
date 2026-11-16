@@ -117,9 +117,12 @@ export class GoogleSim {
         insert: async (p: calendar_v3.Params$Resource$Events$Insert) => {
           const c = cal(p.calendarId);
           const body = structuredClone(p.requestBody ?? {});
+          if (body.id && c.events.has(body.id)) {
+            throw Object.assign(new Error('Conflict'), { status: 409, code: 409, response: { status: 409, data: {} } });
+          }
           const ev: Ev = {
             ...body,
-            id: `ev${++this.seq}`,
+            id: body.id ?? `ev${++this.seq}`,
             status: 'confirmed',
             updated: this.stamp(),
             organizer: { email: c.owner, self: true },

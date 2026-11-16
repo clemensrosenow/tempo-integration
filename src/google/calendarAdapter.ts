@@ -22,6 +22,7 @@ import {
   renderBlockDescription,
   toGoogleEvent,
 } from './mapping.js';
+import { randomBytes } from 'node:crypto';
 import { errorMessage, isStatus, withRetry, type RetryOptions } from './retry.js';
 
 /** Where sync tokens live (e.g. `TempoState.syncTokens`). `undefined` clears the token. */
@@ -238,12 +239,19 @@ export class GoogleCalendarAdapter implements CalendarPort {
   }
 
   async createBlock(tempoCalendarId: string, block: BlockDraft): Promise<CalendarEvent> {
-    const { data } = await this.call(() =>
-      this.api.events.insert({
-        calendarId: tempoCalendarId,
-        sendUpdates: 'none',
-        requestBody: toGoogleEvent(block),
-      }),
+    // Client-generated id makes the insert idempotent under retries: if a retried
+    // request already succeeded server-side, Google answers 409 and we read it back.
+    const id = newEventId();
+    const data = await insertIdempotent(
+      () =>
+        this.call(() =>
+          this.api.events.insert({
+            calendarId: tempoCalendarId,
+            sendUpdates: 'none',
+            requestBody: { ...toGoogleEvent(block), id },
+          }),
+        ),
+      () => this.call(() => this.api.events.get({ calendarId: tempoCalendarId, eventId: id })),
     );
     return this.requireMapped(data, tempoCalendarId);
   }
@@ -254,6 +262,10 @@ export class GoogleCalendarAdapter implements CalendarPort {
     patch: { start?: Date; end?: Date; reason?: string; learned?: string[]; title?: string },
   ): Promise<CalendarEvent> {
     const { data: current } = await this.call(() => this.api.events.get({ calendarId: tempoCalendarId, eventId }));
+    // events.get returns deleted events as 200 + status 'cancelled'; treat as gone (404-shaped).
+    if (current.status === 'cancelled') {
+      throw Object.assign(new Error(`Event ${eventId} was deleted`), { status: 404, code: 404 });
+    }
     const priv = current.extendedProperties?.private ?? {};
     if (priv[PROP.tempo] === undefined) {
       throw new Error(`Refusing to modify event ${eventId}: it is not a Tempo block`);
@@ -305,5 +317,27 @@ export class GoogleCalendarAdapter implements CalendarPort {
     const mapped = this.mapEvent(ev, calendarId);
     if (!mapped) throw new Error(`Google returned an event without id/start/end in ${calendarId}`);
     return mapped;
+  }
+}
+
+/** Google event ids: 5–1024 chars of base32hex (a–v, 0–9). */
+export function newEventId(): string {
+  const alphabet = '0123456789abcdefghijklmnopqrstuv';
+  const bytes = randomBytes(26);
+  let id = 't';
+  for (const b of bytes) id += alphabet[b % 32];
+  return id;
+}
+
+/** Run an insert with a client-chosen id; a 409 (already exists) means an earlier attempt succeeded. */
+export async function insertIdempotent(
+  insert: () => Promise<{ data: calendar_v3.Schema$Event }>,
+  readBack: () => Promise<{ data: calendar_v3.Schema$Event }>,
+): Promise<calendar_v3.Schema$Event> {
+  try {
+    return (await insert()).data;
+  } catch (err) {
+    if (isStatus(err, 409)) return (await readBack()).data;
+    throw err;
   }
 }

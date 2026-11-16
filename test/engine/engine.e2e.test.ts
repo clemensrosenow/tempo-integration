@@ -214,4 +214,50 @@ describe('Tempo engine end-to-end', () => {
     const state = await store.load();
     expect(state.questions.every((q) => q.status !== 'open')).toBe(true);
   });
+
+  it('does not re-raise an unaskable question every tick (expired = No, with learning)', async () => {
+    const noInvites = new TempoEngine({
+      calendar: google,
+      tasks: google,
+      llm: stubLlm,
+      store,
+      config: { horizonDays: 7 },
+      clock: clock.fn,
+    });
+    google.addTask({ title: 'Thesis chapter draft', due: local('2026-11-24T00:00') });
+    await noInvites.tick({ force: true });
+    const before = (await store.load()).questions.length;
+    for (let i = 0; i < 3; i++) {
+      clock.advanceMin(20);
+      await noInvites.tick({ force: true });
+    }
+    expect((await store.load()).questions.length).toBe(before);
+  });
+
+  it('notices a block that ends while its task is still open, even if it ended during a tick', async () => {
+    const paper = google.addTask({ title: 'Read paper for seminar', due: local('2026-11-27T00:00') });
+    await engine.tick({ force: true });
+    const first = google.tempoBlocks().find((b) => b.tempo!.taskId === paper.id)!;
+    // Tick right before the block ends; the block ends while that tick "runs".
+    clock.set(new Date(first.end.getTime() - 1_000).toISOString());
+    await engine.tick({ force: true });
+    clock.set(new Date(first.end.getTime() + 5 * 60_000).toISOString());
+    const r = await engine.tick();
+    expect(r.signals.some((s) => s.type === 'block-ended-open' && s.eventId === first.id)).toBe(true);
+    expect(google.tempoBlocks().some((b) => b.tempo!.taskId === paper.id && b.start > clock.now)).toBe(true);
+  });
+
+  it('renames blocks when the Google Task is renamed', async () => {
+    const paper = google.addTask({ title: 'Read paper for seminar', due: local('2026-11-27T00:00') });
+    await engine.tick({ force: true });
+    clock.advanceMin(5);
+    const t = google.tasks.find((x) => x.id === paper.id)!;
+    t.title = 'Read Horvitz 1999 paper';
+    t.updated = clock.fn();
+    clock.advanceMin(3);
+    await engine.tick();
+    const blocks = google.tempoBlocks().filter((b) => b.tempo!.taskId === paper.id);
+    expect(blocks.length).toBeGreaterThan(0);
+    expect(blocks.every((b) => b.title === 'Read Horvitz 1999 paper')).toBe(true);
+  });
 });

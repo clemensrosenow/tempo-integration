@@ -190,6 +190,8 @@ export interface TempoState {
   /** Debounce bookkeeping (E8). */
   pendingSince?: string;
   lastPlanAt?: string;
+  /** Planning-relevant preferences at the last plan; a difference triggers a re-plan. */
+  prefsKey?: string;
   /** Google Calendar sync tokens per calendar id. */
   syncTokens: Record<string, string>;
   /** Active push-notification channels (optional webhook mode). */

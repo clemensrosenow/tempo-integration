@@ -366,6 +366,7 @@ export function fromCalendarListEntry(entry: calendar_v3.Schema$CalendarListEntr
     isTempo: isTempoCalendarEntry(entry),
   };
   if (entry.timeZone) info.timeZone = entry.timeZone;
+  info.visible = entry.selected === true && entry.hidden !== true;
   return info;
 }
 

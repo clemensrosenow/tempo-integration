@@ -33,6 +33,7 @@ import { DEBOUNCE_MS } from '../core/types.js';
 import { runPlanningPipeline } from '../core/pipeline.js';
 import { detectSignals } from '../core/signals.js';
 import { handleAnswer } from '../core/questions.js';
+import { planningPrefsKey } from '../settings/settings.js';
 
 export interface EngineConfig {
   horizonDays: number;
@@ -172,6 +173,13 @@ export class TempoEngine {
     }
 
     // 5. Decide whether to plan at all ----------------------------------------
+    // Settings edited (working hours, busy calendars …): re-plan everything now.
+    const prefsKey = planningPrefsKey(prefs);
+    if (state.prefsKey !== undefined && state.prefsKey !== prefsKey && signals.length === 0) {
+      say('settings changed: re-planning');
+      signals.push({ type: 'periodic' });
+    }
+    state.prefsKey = prefsKey;
     const periodicMs = config.periodicReplanMs ?? 15 * 60_000;
     const lastPlanAt = state.lastPlanAt ? new Date(state.lastPlanAt).getTime() : 0;
     if (signals.length === 0) {

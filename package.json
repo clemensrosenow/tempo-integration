@@ -15,7 +15,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "tempo": "tsx src/cli.ts"
+    "tempo": "tsx src/cli.ts",
+    "sandbox": "tsx scripts/sandbox.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",

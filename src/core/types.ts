@@ -32,6 +32,11 @@ export interface CalendarInfo {
   /** True for the dedicated "Tempo" calendar Tempo writes to. */
   isTempo: boolean;
   timeZone?: string;
+  /**
+   * Checked (shown) in Google Calendar's sidebar (`selected && !hidden`).
+   * Setup reads exactly these calendars as busy time; undefined = unknown.
+   */
+  visible?: boolean;
 }
 
 export type ResponseStatus = 'needsAction' | 'declined' | 'tentative' | 'accepted';
@@ -149,8 +154,12 @@ export interface DailyWindow {
 export interface Preferences {
   /** IANA timezone, e.g. "Europe/Berlin". */
   timezone: string;
-  /** Tempo only places blocks inside working hours on working days. */
-  workingHours: DailyWindow & { days: IsoWeekday[] };
+  /**
+   * Tempo only places blocks inside working hours on working days.
+   * `start`/`end` apply to every working day unless `perDay` gives that
+   * weekday its own window (from the settings file, e.g. a short Friday).
+   */
+  workingHours: DailyWindow & { days: IsoWeekday[]; perDay?: Partial<Record<IsoWeekday, DailyWindow>> };
   /** Preferred window for deep-work tasks. */
   focusTime: DailyWindow;
   /** Never planned (may wrap midnight, e.g. 23:00-07:00). */

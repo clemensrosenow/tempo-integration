@@ -214,7 +214,13 @@ export function localWindows(
 }
 
 export function workingWindows(span: TimeRange, prefs: Preferences): TimeRange[] {
-  return localWindows(span, prefs.timezone, prefs.workingHours, prefs.workingHours.days);
+  const wh = prefs.workingHours;
+  const perDay = wh.perDay;
+  if (!perDay || Object.keys(perDay).length === 0) return localWindows(span, prefs.timezone, wh, wh.days);
+  // One window per working day, each with its own hours.
+  return sortRanges(
+    wh.days.flatMap((d) => localWindows(span, prefs.timezone, perDay[d] ?? wh, [d])),
+  );
 }
 
 export function focusWindows(span: TimeRange, prefs: Preferences): TimeRange[] {

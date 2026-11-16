@@ -6,6 +6,8 @@
 import type { CalendarPort, StateStore } from '../core/ports.js';
 import type { CalendarInfo, DailyWindow, IsoWeekday, Preferences } from '../core/types.js';
 import { inferPreferences } from '../onboarding/infer.js';
+import { settingsFromPrefs, writeSettings } from '../settings/settings.js';
+import { defaultState } from '../store/state.js';
 
 export interface SetupOverrides {
   workingHours?: DailyWindow;
@@ -62,9 +64,14 @@ export async function confirmSetup(
   calendar: CalendarPort,
   store: StateStore,
   proposal: SetupProposal,
-): Promise<{ tempoCalendarId: string }> {
+  opts: { settingsFile?: string } = {},
+): Promise<{ tempoCalendarId: string; accountChanged: boolean }> {
   const tempoCalendarId = await calendar.ensureTempoCalendar(proposal.timezone);
-  const state = await store.load();
+  let state = await store.load();
+  // Another Google account: nothing of the old one (estimates, questions,
+  // learned preferences, sync tokens, Tempo calendar id) may carry over.
+  const accountChanged = state.userEmail !== undefined && state.userEmail !== proposal.userEmail;
+  if (accountChanged) state = defaultState();
   const previousLearned = state.prefs?.learned;
   state.prefs = {
     ...proposal.prefs,
@@ -77,7 +84,8 @@ export async function confirmSetup(
   // Force a fresh baseline: the first tick after setup is an 'initial' plan.
   delete state.lastSnapshot;
   await store.save(state);
-  return { tempoCalendarId };
+  if (opts.settingsFile) await writeSettings(opts.settingsFile, settingsFromPrefs(state.prefs, proposal.calendars));
+  return { tempoCalendarId, accountChanged };
 }
 
 export function describeProposal(p: SetupProposal): string {

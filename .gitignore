@@ -7,3 +7,4 @@ dist/
 .tempo/
 *.log
 .DS_Store
+tempo.json

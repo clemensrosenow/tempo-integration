@@ -9,7 +9,9 @@
  *   tempo plan [--force]          run one planning tick
  *   tempo run                     keep planning (polling + optional calendar push webhook)
  *   tempo status                  preferences, questions, learned notes, upcoming blocks
- *   tempo tasks | calendars       debug views of what Tempo reads from Google
+ *   tempo prefs [hours|focus|sleep|buffer|timezone …]   show / change tempo.json
+ *   tempo calendars [add|remove|reset …]                busy calendars (tempo.json)
+ *   tempo tasks                   debug view of what Tempo reads from Google Tasks
  *   tempo clear-blocks            delete all future Tempo blocks (keeps preferences)
  */
 import { parseArgs } from 'node:util';
@@ -22,11 +24,20 @@ import { FileStateStore } from './store/fileStore.js';
 import { TempoEngine, errorMessage, type TickReport } from './engine/engine.js';
 import { confirmSetup, describeProposal, proposeSetup, type SetupOverrides } from './engine/setup.js';
 import { startDaemon } from './engine/daemon.js';
-import type { DailyWindow, IsoWeekday } from './core/types.js';
+import type { CalendarInfo, DailyWindow, IsoWeekday } from './core/types.js';
+import {
+  readSettings,
+  settingsFromPrefs,
+  SettingsStore,
+  WEEKDAYS,
+  writeSettings,
+  type SettingsFile,
+  type WeekdayKey,
+} from './settings/settings.js';
 
 async function main(argv: string[]): Promise<void> {
   const [command = 'help', ...rest] = argv;
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
     options: {
@@ -45,8 +56,8 @@ async function main(argv: string[]): Promise<void> {
 
   const config = loadConfig();
   for (const w of config.warnings) console.warn(`tempo: warning: ${w}`);
-  const store = new FileStateStore(config.dataDir);
   const log = (line: string) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${line}`);
+  const store = new SettingsStore(new FileStateStore(config.dataDir), config.settingsFile, log);
 
   const adapters = async () => {
     const state = await store.load();
@@ -64,6 +75,12 @@ async function main(argv: string[]): Promise<void> {
 
   const engine = async () => {
     const g = await adapters();
+    const state = await store.load();
+    if (state.userEmail && g.userEmail && state.userEmail !== g.userEmail) {
+      throw new Error(
+        `Signed in as ${g.userEmail}, but Tempo was set up for ${state.userEmail}. Run \`tempo setup\` to start over with this account.`,
+      );
+    }
     if (!g.invites) log('note: no organizer account connected — questions cannot be sent (run `tempo login --organizer`)');
     return new TempoEngine({
       calendar: g.calendar,
@@ -106,8 +123,12 @@ async function main(argv: string[]): Promise<void> {
         console.log('Nothing saved. Re-run with overrides, e.g. --working-hours 08:00-17:00');
         return;
       }
-      const { tempoCalendarId } = await confirmSetup(g.calendar, store, proposal);
+      const { tempoCalendarId, accountChanged } = await confirmSetup(g.calendar, store, proposal, {
+        settingsFile: config.settingsFile,
+      });
+      if (accountChanged) log('new Google account: started from a clean slate');
       log(`saved. Tempo calendar: ${tempoCalendarId}`);
+      log(`settings: ${config.settingsFile} (edit it, or use \`tempo prefs\` / \`tempo calendars\`)`);
       log('drafting your first plan …');
       printReport(await (await engine()).tick({ force: true }));
       return;
@@ -144,9 +165,7 @@ async function main(argv: string[]): Promise<void> {
       const tz = state.prefs.timezone;
       const fmt = (d: Date | string) => DateTime.fromJSDate(new Date(d)).setZone(tz).toFormat('ccc dd LLL HH:mm');
       console.log(`Account: ${state.userEmail}   Tempo calendar: ${state.tempoCalendarId}`);
-      console.log(
-        `Working hours ${state.prefs.workingHours.start}–${state.prefs.workingHours.end}, focus ${state.prefs.focusTime.start}–${state.prefs.focusTime.end}, sleep ${state.prefs.sleep.start}–${state.prefs.sleep.end} (${tz})`,
-      );
+      console.log(describeSettings(settingsFromPrefs(state.prefs)));
       console.log(`Last plan: ${state.lastPlanAt ? fmt(state.lastPlanAt) : 'never'}`);
       const open = state.questions.filter((q) => q.status === 'open' || q.status === 'queued');
       console.log(`\nQuestions (${open.length}):`);
@@ -176,11 +195,54 @@ async function main(argv: string[]): Promise<void> {
       }
       return;
     }
+    case 'prefs': {
+      const { settings, state } = await loadSettingsOrFail(store, config.settingsFile);
+      const [what, ...args] = positionals;
+      if (what) {
+        changeSetting(settings, what, args);
+        await writeSettings(config.settingsFile, settings);
+        log(`saved ${config.settingsFile}${state ? ' — a running Tempo re-plans on its next tick' : ''}`);
+      }
+      console.log(describeSettings(settings));
+      if (!what) console.log(`\nFile: ${config.settingsFile}\nChange: tempo prefs hours mon-fri 09:00-18:00 | hours sat off | focus 09:00-12:00 | sleep 23:30-07:00 | buffer 10 | timezone Europe/Berlin`);
+      return;
+    }
     case 'calendars': {
       const g = await adapters();
-      for (const c of await g.calendar.listCalendars()) {
-        console.log(`${c.primary ? '*' : ' '} ${c.isTempo ? '[Tempo] ' : ''}${c.summary}  (${c.accessRole})  ${c.id}`);
+      const calendars = await g.calendar.listCalendars();
+      const [action, ...args] = positionals;
+      const loaded = await loadSettingsOrFail(store, config.settingsFile).catch(() => undefined);
+      if (action) {
+        if (!loaded) throw new Error('Not set up. Run `tempo setup` first.');
+        const { settings } = loaded;
+        const busy = new Map(settings.busyCalendars.map((c) => [c.id, c]));
+        if (action === 'reset') {
+          busy.clear();
+          for (const c of calendars) if (c.visible && !c.isTempo) busy.set(c.id, { name: c.summary, id: c.id });
+        } else if (action === 'add' || action === 'remove') {
+          if (args.length === 0) throw new Error(`Usage: tempo calendars ${action} <name or id> [...]`);
+          for (const arg of args) {
+            const c = findCalendar(calendars, arg);
+            if (c.isTempo) throw new Error('The Tempo calendar is always read; it cannot be added or removed.');
+            if (action === 'add') busy.set(c.id, { name: c.summary, id: c.id });
+            else busy.delete(c.id);
+          }
+        } else {
+          throw new Error(`Unknown action "${action}". Use: tempo calendars [add|remove <name>… | reset]`);
+        }
+        settings.busyCalendars = [...busy.values()];
+        await writeSettings(config.settingsFile, settings);
+        log(`saved ${config.settingsFile}`);
       }
+      const busyIds = new Set((loaded?.settings.busyCalendars ?? []).map((c) => c.id));
+      console.log('Calendars (x = read as busy time; "hidden" = unchecked in Google Calendar):');
+      for (const c of calendars) {
+        const mark = c.isTempo ? 'T' : busyIds.has(c.id) ? 'x' : ' ';
+        console.log(`  [${mark}] ${c.summary}${c.primary ? ' (primary)' : ''}${c.visible === false ? '  — hidden' : ''}${c.isTempo ? '  — Tempo writes here' : ''}`);
+      }
+      const gone = [...busyIds].filter((id) => !calendars.some((c) => c.id === id));
+      for (const id of gone) console.log(`  [x] ${id}  — no longer in your calendar list`);
+      if (!action) console.log('\nChange: tempo calendars add "<name>" | remove "<name>" | reset (= the ones checked in Google Calendar)');
       return;
     }
     case 'clear-blocks': {
@@ -204,11 +266,13 @@ async function main(argv: string[]): Promise<void> {
           'Usage: tempo <command>',
           '  login [--organizer] [--no-browser]   connect Google (student account / Tempo organizer account)',
           '  logout [--organizer]',
-          '  setup [--yes] [--working-hours HH:mm-HH:mm] [--days 1,2,3,4,5] [--focus HH:mm-HH:mm]',
+          '  setup [--yes] [--working-hours HH:mm-HH:mm] [--days mon-fri] [--focus HH:mm-HH:mm]',
           '        [--sleep HH:mm-HH:mm] [--calendars id1,id2] [--timezone Area/City]',
           '  plan [--force]                       run one planning tick',
           '  run                                  keep planning in the background',
-          '  status | tasks | calendars           inspect state',
+          '  status | tasks                       inspect state',
+          '  prefs [hours <days> <HH:mm-HH:mm|off> | focus … | sleep … | buffer <min> | timezone <tz>]',
+          '  calendars [add <name>… | remove <name>… | reset]   which calendars count as busy',
           '  clear-blocks                         delete future Tempo blocks',
         ].join('\n'),
       );
@@ -225,9 +289,117 @@ function parseWindow(v: string | undefined): DailyWindow | undefined {
 
 function parseDays(v: string | undefined): IsoWeekday[] | undefined {
   if (!v) return undefined;
-  const days = v.split(',').map((s) => Number(s.trim()));
-  if (days.some((d) => !Number.isInteger(d) || d < 1 || d > 7)) throw new Error(`--days expects 1..7 (Mon..Sun), got "${v}"`);
-  return days as IsoWeekday[];
+  return parseDaySpec(v).map((k) => (WEEKDAYS.indexOf(k) + 1) as IsoWeekday);
+}
+
+/** "mon-fri", "sat,sun", "weekdays", "weekend", "all", "1,2,3" → weekday keys. */
+export function parseDaySpec(spec: string): WeekdayKey[] {
+  const out = new Set<WeekdayKey>();
+  const key = (t: string): WeekdayKey => {
+    const n = Number(t);
+    if (Number.isInteger(n) && n >= 1 && n <= 7) return WEEKDAYS[n - 1]!;
+    const k = WEEKDAYS.find((d) => t.toLowerCase().startsWith(d));
+    if (!k) throw new Error(`Unknown day "${t}" (use mon…sun, mon-fri, weekdays, weekend, all)`);
+    return k;
+  };
+  for (const part of spec.split(',').map((p) => p.trim()).filter(Boolean)) {
+    const p = part.toLowerCase();
+    if (p === 'all' || p === 'daily') WEEKDAYS.forEach((d) => out.add(d));
+    else if (p === 'weekdays') WEEKDAYS.slice(0, 5).forEach((d) => out.add(d));
+    else if (p === 'weekend' || p === 'weekends') WEEKDAYS.slice(5).forEach((d) => out.add(d));
+    else if (p.includes('-')) {
+      const [a, b] = p.split('-').map((x) => WEEKDAYS.indexOf(key(x.trim())));
+      for (let i = a!; ; i = (i + 1) % 7) {
+        out.add(WEEKDAYS[i]!);
+        if (i === b) break;
+      }
+    } else out.add(key(p));
+  }
+  if (out.size === 0) throw new Error(`No days in "${spec}"`);
+  return [...out];
+}
+
+async function loadSettingsOrFail(
+  store: SettingsStore,
+  file: string,
+): Promise<{ settings: SettingsFile; state: boolean }> {
+  const r = await readSettings(file);
+  if (r.kind === 'ok') return { settings: r.settings, state: true };
+  if (r.kind === 'invalid') throw new Error(`${r.error}\nFix the file (or delete it to regenerate it from the last valid settings).`);
+  const state = await store.load();
+  if (!state.prefs) throw new Error('Not set up. Run `tempo login` then `tempo setup`.');
+  // Recreate the file from the settings saved at setup.
+  const settings = settingsFromPrefs(state.prefs);
+  await writeSettings(file, settings);
+  return { settings, state: true };
+}
+
+function changeSetting(s: SettingsFile, what: string, args: string[]): void {
+  const one = (name: string) => {
+    if (args.length !== 1) throw new Error(`Usage: tempo prefs ${what} <${name}>`);
+    return args[0]!;
+  };
+  const win = (v: string) => {
+    const w = parseWindow(v);
+    if (!w) throw new Error(`Expected HH:mm-HH:mm, got "${v}"`);
+    return `${w.start}-${w.end}`;
+  };
+  switch (what) {
+    case 'hours': {
+      if (args.length !== 2) throw new Error('Usage: tempo prefs hours <mon-fri|sat,sun|…> <HH:mm-HH:mm|off>');
+      const value = args[1]!.toLowerCase() === 'off' ? 'off' : win(args[1]!);
+      for (const d of parseDaySpec(args[0]!)) s.workingHours[d] = value;
+      return;
+    }
+    case 'focus':
+      s.focusTime = win(one('HH:mm-HH:mm'));
+      return;
+    case 'sleep':
+      s.sleep = win(one('HH:mm-HH:mm'));
+      return;
+    case 'buffer': {
+      const n = Number(one('minutes'));
+      if (!Number.isInteger(n) || n < 0 || n > 60) throw new Error('Buffer must be 0-60 minutes');
+      s.bufferMinutes = n;
+      return;
+    }
+    case 'timezone':
+      s.timezone = one('Area/City');
+      return;
+    default:
+      throw new Error(`Unknown setting "${what}". Use: hours | focus | sleep | buffer | timezone`);
+  }
+}
+
+function describeSettings(s: SettingsFile): string {
+  const label: Record<WeekdayKey, string> = { mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun' };
+  // Group consecutive days with the same hours: "Mon–Thu 09:00-18:00".
+  const groups: string[] = [];
+  let i = 0;
+  while (i < 7) {
+    let j = i;
+    while (j + 1 < 7 && s.workingHours[WEEKDAYS[j + 1]!] === s.workingHours[WEEKDAYS[i]!]) j++;
+    const days = i === j ? label[WEEKDAYS[i]!] : `${label[WEEKDAYS[i]!]}–${label[WEEKDAYS[j]!]}`;
+    groups.push(`${days} ${s.workingHours[WEEKDAYS[i]!]}`);
+    i = j + 1;
+  }
+  return [
+    `Working hours:  ${groups.join(', ')}`,
+    `Focus time:     ${s.focusTime}`,
+    `Sleep:          ${s.sleep}`,
+    `Buffer:         ${s.bufferMinutes} min around fixed events`,
+    `Timezone:       ${s.timezone}`,
+    `Busy calendars: ${s.busyCalendars.map((c) => c.name ?? c.id).join(', ') || 'none'}`,
+  ].join('\n');
+}
+
+function findCalendar(calendars: CalendarInfo[], query: string): CalendarInfo {
+  const exact = calendars.filter((c) => c.id === query || c.summary.toLowerCase() === query.toLowerCase());
+  if (exact.length === 1) return exact[0]!;
+  const partial = calendars.filter((c) => c.summary.toLowerCase().includes(query.toLowerCase()));
+  if (partial.length === 1) return partial[0]!;
+  const options = (exact.length ? exact : partial).map((c) => `"${c.summary}" (${c.id})`).join(', ');
+  throw new Error(options ? `"${query}" matches several calendars: ${options}. Use the id.` : `No calendar named "${query}". See \`tempo calendars\`.`);
 }
 
 async function confirm(question: string): Promise<boolean> {

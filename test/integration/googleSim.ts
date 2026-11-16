@@ -178,7 +178,7 @@ export class GoogleSim {
       },
       calendarList: {
         list: async () => ({
-          data: { items: [...this.cals.values()].filter((c) => c.owner === account || c.entry.accessRole !== 'owner' || c.entry.id === account).filter((c) => c.owner === account || this.shared.has(`${account}|${c.entry.id}`)).map((c) => ({ ...c.entry, primary: c.entry.id === account ? true : undefined })) },
+          data: { items: [...this.cals.values()].filter((c) => c.owner === account || c.entry.accessRole !== 'owner' || c.entry.id === account).filter((c) => c.owner === account || this.shared.has(`${account}|${c.entry.id}`)).map((c) => ({ selected: true, ...c.entry, primary: c.entry.id === account ? true : undefined })) },
         }),
         insert: async (p: calendar_v3.Params$Resource$Calendarlist$Insert) => ({ data: { ...p.requestBody } }),
         patch: async (p: calendar_v3.Params$Resource$Calendarlist$Patch) => {

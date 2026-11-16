@@ -109,17 +109,24 @@ function isExcludedCalendar(c: CalendarInfo): string | undefined {
 }
 
 function selectCalendars(calendars: CalendarInfo[]): { ids: string[]; evidence: string[] } {
-  const read = calendars.filter((c) => !isExcludedCalendar(c));
+  // Google Calendar's own sidebar checkboxes decide: what you show is what
+  // Tempo reads as busy. Without that information, read every calendar.
+  const knowsVisibility = calendars.some((c) => c.visible !== undefined);
+  const candidates = calendars.filter((c) => !isExcludedCalendar(c));
+  const read = knowsVisibility ? candidates.filter((c) => c.visible) : candidates;
+  const hidden = knowsVisibility ? candidates.filter((c) => !c.visible) : [];
   const skipped = calendars.filter((c) => {
     const why = isExcludedCalendar(c);
     return why === 'holidays' || why === 'birthdays';
   });
+  const names = (cs: CalendarInfo[]) => cs.map((c) => c.summary).join(', ');
   const evidence = [
-    `Reading ${read.length} calendar${read.length === 1 ? '' : 's'} as busy time: ${read.map((c) => c.summary).join(', ') || 'none'}.`,
+    knowsVisibility
+      ? `Reading the ${read.length} calendar${read.length === 1 ? '' : 's'} you show in Google Calendar as busy time: ${names(read) || 'none'}.`
+      : `Reading ${read.length} calendar${read.length === 1 ? '' : 's'} as busy time: ${names(read) || 'none'}.`,
   ];
-  if (skipped.length > 0) {
-    evidence.push(`Skipping holiday/birthday calendars: ${skipped.map((c) => c.summary).join(', ')}.`);
-  }
+  if (hidden.length > 0) evidence.push(`Not reading calendars you hide in Google Calendar: ${names(hidden)}.`);
+  if (skipped.length > 0) evidence.push(`Skipping holiday/birthday calendars: ${names(skipped)}.`);
   return { ids: read.map((c) => c.id), evidence };
 }
 

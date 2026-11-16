@@ -17,7 +17,14 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { CodeChallengeMethod, OAuth2Client, type Credentials } from 'google-auth-library';
 
-export type GoogleProfile = 'user' | 'organizer';
+/**
+ * - user: the student (reads all calendars, writes the Tempo calendar, reads Tasks)
+ * - organizer: the separate account that sends question invitations
+ * - sandbox: developer tool only (scripts/sandbox.ts) — full Calendar + Tasks
+ *   access to a TEST account, to create sample events and tasks. Tempo itself
+ *   never uses it.
+ */
+export type GoogleProfile = 'user' | 'organizer' | 'sandbox';
 
 export const SCOPES: Record<GoogleProfile, readonly string[]> = {
   user: [
@@ -29,19 +36,21 @@ export const SCOPES: Record<GoogleProfile, readonly string[]> = {
   // calendar.events.owned is accepted by events.insert/get/patch/delete and only
   // covers calendars the organizer account owns (its primary) — the minimum needed.
   organizer: ['openid', 'email', 'https://www.googleapis.com/auth/calendar.events.owned'],
+  sandbox: ['openid', 'email', 'https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/tasks'],
 };
 
 const IDENTITY_SCOPES = new Set(['openid', 'email', 'profile']);
 const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
 
 export function loginCommand(profile: GoogleProfile): string {
+  if (profile === 'sandbox') return 'npm run sandbox -- login';
   return profile === 'organizer' ? 'npm run tempo -- login --organizer' : 'npm run tempo -- login';
 }
 
 export class NotSignedInError extends Error {
   constructor(readonly profile: GoogleProfile, detail?: string) {
     super(
-      `Not signed in to Google as the Tempo ${profile === 'organizer' ? 'organizer account' : 'user'}` +
+      `Not signed in to Google as the Tempo ${profile === 'organizer' ? 'organizer account' : profile === 'sandbox' ? 'sandbox (test data) account' : 'user'}` +
         `${detail ? ` (${detail})` : ''}. Run \`${loginCommand(profile)}\` first.`,
     );
     this.name = 'NotSignedInError';
@@ -320,7 +329,12 @@ export async function signIn(profile: GoogleProfile, opts: SignInOptions): Promi
       ...(opts.loginHint ? { login_hint: opts.loginHint } : {}),
     });
 
-    const who = profile === 'organizer' ? 'the separate Tempo ORGANIZER Google account' : 'YOUR Google account';
+    const who =
+      profile === 'organizer'
+        ? 'the separate Tempo ORGANIZER Google account'
+        : profile === 'sandbox'
+          ? 'the TEST Google account that sample data may be written to'
+          : 'YOUR Google account';
     log(`Sign in with ${who} in the browser:\n\n  ${url}\n`);
     if (opts.openBrowser !== false) openInBrowser(url);
 
@@ -337,7 +351,7 @@ export async function signIn(profile: GoogleProfile, opts: SignInOptions): Promi
     }
     const email = await fetchEmail(client, tokens);
 
-    const other = await readStoredToken(profile === 'user' ? 'organizer' : 'user', opts.dataDir);
+    const other = profile === 'sandbox' ? undefined : await readStoredToken(profile === 'user' ? 'organizer' : 'user', opts.dataDir);
     if (other?.email && other.email.toLowerCase() === email.toLowerCase()) {
       throw new Error(
         `${email} is already connected as the Tempo ${other.profile}. The organizer must be a different ` +

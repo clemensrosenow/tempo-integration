@@ -23,6 +23,8 @@ export interface LlmConfig {
 
 export interface TempoConfig {
   dataDir: string;
+  /** User-editable settings (working hours, busy calendars): TEMPO_SETTINGS or `<repo>/tempo.json`. */
+  settingsFile: string;
   llm: LlmConfig;
   horizonDays: number;
   pollIntervalSec: number;
@@ -59,6 +61,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): TempoConfig {
   const llm = resolveLlmConfig(env, warnings);
   const config: TempoConfig = {
     dataDir: path.resolve(nonEmpty(env.TEMPO_DATA_DIR) ?? path.join(REPO_ROOT, '.tempo')),
+    settingsFile: path.resolve(nonEmpty(env.TEMPO_SETTINGS) ?? path.join(REPO_ROOT, 'tempo.json')),
     llm,
     horizonDays: positiveInt(env, 'TEMPO_HORIZON_DAYS', 14, warnings),
     pollIntervalSec: positiveInt(env, 'TEMPO_POLL_INTERVAL_SEC', 60, warnings),

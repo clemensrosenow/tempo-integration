@@ -258,7 +258,10 @@ describe('calendar list mapping', () => {
       accessRole: 'owner',
       isTempo: true,
       timeZone: 'Europe/Berlin',
+      visible: false,
     });
+    expect(fromCalendarListEntry({ id: 'x', selected: true })!.visible).toBe(true);
+    expect(fromCalendarListEntry({ id: 'x', selected: true, hidden: true })!.visible).toBe(false);
     const primary = fromCalendarListEntry({ id: 'me@gmail.com', summary: 'me', summaryOverride: 'Me', primary: true })!;
     expect(primary).toMatchObject({ summary: 'Me', primary: true, isTempo: false, accessRole: 'reader' });
   });

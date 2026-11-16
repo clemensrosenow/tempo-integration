@@ -53,15 +53,29 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         pending = setTimeout(() => void runTick('push'), 2_000);
       },
     });
-    for (const calendarId of opts.calendarIds) {
+    const publicUrl = opts.webhook.publicUrl;
+    // Channels expire (Google sets the TTL); renew each one an hour before it does.
+    const startChannel = async (calendarId: string): Promise<void> => {
       try {
-        const ch = await watch.start(calendarId, opts.webhook.publicUrl, `tempo-${randomId()}`);
+        const ch = await watch.start(calendarId, publicUrl, `tempo-${randomId()}`);
         channels.push(ch);
-        log(`watching ${calendarId} until ${ch.expiration}`);
+        log(`watching ${calendarId} until ${ch.expiration || 'unknown'}`);
+        const expiresAt = ch.expiration ? new Date(ch.expiration).getTime() : NaN;
+        if (Number.isFinite(expiresAt)) {
+          const renewIn = Math.max(60_000, expiresAt - Date.now() - 3_600_000);
+          const t = setTimeout(async () => {
+            if (stopped) return;
+            await startChannel(calendarId);
+            await watch.stop(ch.id, ch.resourceId).catch(() => undefined);
+            channels.splice(channels.indexOf(ch), 1);
+          }, Math.min(renewIn, 2_147_000_000));
+          t.unref();
+        }
       } catch (err) {
         log(`could not watch ${calendarId} (polling still active): ${errorMessage(err)}`);
       }
-    }
+    };
+    for (const calendarId of opts.calendarIds) await startChannel(calendarId);
     const state = await opts.store.load();
     state.channels = channels.map((c, i) => ({ ...c, calendarId: opts.calendarIds[i] ?? '' }));
     await opts.store.save(state);

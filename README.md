@@ -86,5 +86,11 @@ npm run build     # → dist/, `node dist/cli.js`
 ```
 
 Tests replace Google with in-memory fakes and the LLM with stubs (spec
-"Testing Decisions"); no network is used. Runtime state (OAuth tokens,
+"Testing Decisions"); no network is used. `test/integration/` runs the real
+Google adapters against a stateful simulator of the Calendar/Tasks REST API
+(two accounts, invitation copies, RSVPs) together with the real engine.
+
+See [`docs/decisions.md`](docs/decisions.md) for how open points of the spec
+were decided, and [`docs/google-api-notes.md`](docs/google-api-notes.md) for
+the verified Google API behaviour this relies on. Runtime state (OAuth tokens,
 preferences, question queue) lives in `.tempo/` (git-ignored).

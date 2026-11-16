@@ -67,7 +67,12 @@ export interface CalendarEvent {
   /** The connected user's own RSVP, if the user is an attendee. */
   selfResponse?: ResponseStatus;
   updated: Date;
-  /** Present iff this event was created by Tempo (lives in the Tempo calendar). */
+  /**
+   * Present iff this event was created by Tempo: a block in the Tempo calendar
+   * (kind 'block'), or the attendee copy of a Tempo invitation in the user's
+   * primary calendar (kind 'question', detected via extendedProperties.shared).
+   * Tempo events are never treated as fixed/busy events.
+   */
   tempo?: TempoBlockMeta;
 }
 
@@ -236,6 +241,8 @@ export interface Question {
   alternatives: Array<{ slot: TimeRange; proposal: EventChange[]; summary: string }>;
   /** Tempo blocks hidden (deleted) while the question is open; restored on "No". */
   replacedBlocks: BlockDraft[];
+  /** Event ids of `replacedBlocks` in the Tempo calendar; the engine deletes them when the question opens. */
+  replacedEventIds: string[];
   /** For unclear-priority questions: the priority applied on "Yes". */
   proposedPriority?: number;
   createdAt: Date;

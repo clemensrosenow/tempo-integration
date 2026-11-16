@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+# local runtime state: OAuth tokens, preferences, question queue
+.tempo/
+*.log
+.DS_Store

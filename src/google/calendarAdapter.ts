@@ -97,6 +97,29 @@ export class GoogleCalendarAdapter implements CalendarPort {
     return data.id;
   }
 
+  /**
+   * Google Calendar's "Add invitations to my calendar" setting
+   * (settings.hideInvitationsSetting, e.g. UNKNOWN_SENDERS; older accounts
+   * only have the boolean hideInvitations).
+   */
+  async invitationVisibility(): Promise<'all' | 'hidden-unknown' | 'hidden' | 'unknown'> {
+    const settings = this.api.settings;
+    if (!settings) return 'unknown';
+    const read = async (setting: string) => {
+      try {
+        return (await this.call(() => settings.get({ setting }))).data.value ?? undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    const mode = (await read('hideInvitationsSetting'))?.toUpperCase();
+    if (mode?.includes('UNKNOWN')) return 'hidden-unknown';
+    const hide = await read('hideInvitations');
+    if (hide === 'true') return 'hidden';
+    if (mode || hide === 'false') return 'all';
+    return 'unknown';
+  }
+
   private async listCalendarEntries(): Promise<calendar_v3.Schema$CalendarListEntry[]> {
     const out: calendar_v3.Schema$CalendarListEntry[] = [];
     let pageToken: string | undefined;

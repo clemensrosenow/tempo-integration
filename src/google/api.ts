@@ -38,6 +38,9 @@ export interface CalendarApi {
   channels: {
     stop(params: calendar_v3.Params$Resource$Channels$Stop): Promise<unknown>;
   };
+  settings?: {
+    get(params: calendar_v3.Params$Resource$Settings$Get): Res<calendar_v3.Schema$Setting>;
+  };
 }
 
 export interface TasksApi {

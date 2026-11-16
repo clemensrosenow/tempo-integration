@@ -46,7 +46,7 @@
  *   `updatedQuestions` (upsert), brand-new ones in `questions`.
  */
 import { checkPlacements, type CheckContext } from './check.js';
-import { decide } from './decide.js';
+import { decide, detectBigChange } from './decide.js';
 import { classifyBlocks, diffBlocks, changeTaskId } from './diff.js';
 import { busyFixedRanges, findGaps } from './gaps.js';
 import { assessPlacements, greedyPlace, type GreedyResult } from './greedyPlacer.js';
@@ -258,7 +258,39 @@ export async function runPlanningPipeline(input: PlanInput, llm: LlmPort): Promi
     ...unclearPriorityQuestions(run, items, target, finalCurrent, heldIds, pinnedTasks),
   ];
 
-  const diff = diffBlocks({ now: run.now, current: finalCurrent, target, tasks: taskMeta(run, current) });
+  let diff = diffBlocks({ now: run.now, current: finalCurrent, target: mergeAdjacent(target), tasks: taskMeta(run, current) });
+  // Stability (E8): if the re-plan moves existing blocks, first try to fit the
+  // new demand around the current plan. Only if that leaves a task late or
+  // unplanned are the moves (and possibly a big-change question) worth it.
+  if (diff.changes.some((c) => c.op === 'move')) {
+    const stillMovable = finalCurrent.filter((b) => b.status === 'movable');
+    const conservative = greedyPlace({
+      now: run.now,
+      prefs: run.prefs,
+      items: items.map((i) => (heldIds.has(i.taskId) ? { ...i, needMin: 0 } : i)),
+      gaps: subtractRanges(gaps, heldBlocks),
+      existing: stillMovable,
+      pinned: [...pinned, ...heldBlocks],
+      horizonEnd,
+      keepExistingFirst: true,
+    });
+    const noWorse =
+      conservative.late.every((id) => heldIds.has(id) || outcome.late.includes(id)) &&
+      conservative.dropped.every((id) => heldIds.has(id) || outcome.dropped.includes(id));
+    if (noWorse) {
+      const alt = diffBlocks({ now: run.now, current: finalCurrent, target: mergeAdjacent(conservative.placements), tasks: taskMeta(run, current) });
+      const movesOf = (cs: readonly EventChange[]) => cs.filter((c) => c.op === 'move').length;
+      if (movesOf(alt.changes) < movesOf(diff.changes)) {
+        run.log.push(
+          detectBigChange(diff.changes)
+            ? 'big change avoided: the new demand fits around the current plan'
+            : 'kept existing blocks: the new demand fits around them',
+        );
+        target = conservative.placements;
+        diff = alt;
+      }
+    }
+  }
   run.log.push(...diff.log);
   const decision = decide({
     now: run.now,
@@ -425,9 +457,22 @@ function openSubtasks(run: Run, parentId: string): Task[] {
 }
 
 /** Open tasks Tempo plans directly: subtasks, and tasks without open subtasks. */
+/**
+ * A task whose due date passed more than LAPSED_AFTER_DAYS ago is treated as
+ * lapsed: an old, forgotten to-do rather than work for this week. It is not
+ * planned and raises no "missed due date" question; giving it a new due date
+ * (or removing the date) brings it back.
+ */
+export const LAPSED_AFTER_DAYS = 7;
+
+export function isLapsed(due: Date | undefined, now: Date): boolean {
+  return due !== undefined && now.getTime() - due.getTime() > LAPSED_AFTER_DAYS * 86_400_000;
+}
+
 function plannableTasks(run: Run): Task[] {
   return run.input.tasks.filter((t) => {
     if (isDone(run, t.id)) return false;
+    if (isLapsed(effectiveDue(run, t), run.now)) return false;
     if (t.parentId) return true;
     return openSubtasks(run, t.id).length === 0;
   });
@@ -761,6 +806,7 @@ function unclearPriorityQuestions(
 function globalCause(signals: readonly Signal[]): string {
   const has = (t: Signal['type']): boolean => signals.some((s) => s.type === t);
   if (has('initial')) return 'first plan';
+  if (has('settings-changed')) return 'your settings changed';
   if (has('fixed-event-changed')) return 'your calendar changed';
   if (has('block-moved-by-user')) return 'you moved a block';
   if (has('block-ended-open')) return 'a block ended with its task still open';
@@ -769,7 +815,13 @@ function globalCause(signals: readonly Signal[]): string {
   return 're-planned';
 }
 
-function changeCause(run: Run, c: EventChange, events: readonly CalendarEvent[], current: readonly CurrentBlock[]): string {
+function changeCause(
+  run: Run,
+  c: EventChange,
+  events: readonly CalendarEvent[],
+  current: readonly CurrentBlock[],
+  apply: readonly EventChange[],
+): string {
   const taskId = changeTaskId(c);
   const from = c.op === 'move' ? c.from : c.op === 'delete' ? current.find((b) => b.eventId === c.eventId) : undefined;
   if (from) {
@@ -782,7 +834,38 @@ function changeCause(run: Run, c: EventChange, events: readonly CalendarEvent[],
   if (own) return own;
   const global = globalCause(run.input.signals);
   if (c.op === 'create') return global;
-  return `made room — ${global}`;
+  if (c.op === 'move') {
+    if (c.to.start.getTime() < c.from.start.getTime()) {
+      const due = run.tasks.get(taskId)?.due;
+      const dueText = due ? `, well before it's due (${formatLocalDay(addMinutes(due, -1), run.tz)})` : '';
+      return `there is free time sooner${dueText}`;
+    }
+    const taker = apply.find((o) => o !== c && changeTaskId(o) !== taskId && newRange(o) !== undefined && overlaps(newRange(o)!, c.from));
+    if (taker) return `'${changeTitle(run, taker)}' needed the old slot (${global})`;
+  }
+  return global;
+}
+
+/** Back-to-back placements of the same task become one block (one 2 h block, not two 1 h blocks). */
+export function mergeAdjacent(placements: readonly Placement[]): Placement[] {
+  const out: Placement[] = [];
+  for (const p of [...placements].sort((a, b) => a.taskId.localeCompare(b.taskId) || a.start.getTime() - b.start.getTime())) {
+    const last = out.at(-1);
+    if (last && last.taskId === p.taskId && last.end.getTime() === p.start.getTime()) {
+      out[out.length - 1] = { ...last, end: p.end };
+    } else out.push({ ...p });
+  }
+  return out;
+}
+
+function newRange(c: EventChange): TimeRange | undefined {
+  return c.op === 'create' ? c.block : c.op === 'move' ? c.to : undefined;
+}
+
+function changeTitle(run: Run, c: EventChange): string {
+  if (c.op === 'create') return c.block.title;
+  const id = changeTaskId(c);
+  return run.tasks.get(id)?.title ?? 'another task';
 }
 
 function templateReason(c: EventChange, cause: string): string {
@@ -811,17 +894,18 @@ async function explain(
     (c) => !hasReason(c),
   );
   if (changes.length === 0) return;
-  const causes = new Map(changes.map((c) => [c, changeCause(run, c, events, current)]));
+  const causes = new Map(changes.map((c) => [c, changeCause(run, c, events, current, apply)]));
   const req: ExplainRequest = {
     now: run.now,
     timezone: run.tz,
-    changes: changes.map((c) => {
+    // Keyed per change, not per task: one task can have a move and a delete in the same run.
+    changes: changes.map((c, i) => {
       const taskId = changeTaskId(c);
       const kind = c.op === 'create' ? 'created' : c.op === 'move' ? 'moved' : 'dropped';
       const from = c.op === 'move' ? c.from : undefined;
       const to = c.op === 'move' ? c.to : c.op === 'create' ? { start: c.block.start, end: c.block.end } : undefined;
       return {
-        taskId,
+        taskId: explainKey(taskId, i),
         title: run.tasks.get(taskId)?.title ?? (c.op === 'create' ? c.block.title : taskId),
         kind,
         ...(from ? { from } : {}),
@@ -836,10 +920,18 @@ async function explain(
   } catch (err) {
     run.log.push(`explain failed (${errorText(err)}) → template reasons`);
   }
-  for (const c of changes) {
-    const fromLlm = reasons[changeTaskId(c)]?.trim();
+  const perTask = new Map<string, number>();
+  for (const c of changes) perTask.set(changeTaskId(c), (perTask.get(changeTaskId(c)) ?? 0) + 1);
+  for (const [i, c] of changes.entries()) {
+    const id = changeTaskId(c);
+    // Providers answer per key; a plain task id is accepted when it is unambiguous.
+    const fromLlm = (reasons[explainKey(id, i)] ?? (perTask.get(id) === 1 ? reasons[id] : undefined))?.trim();
     setReason(c, fromLlm ? fromLlm : templateReason(c, causes.get(c)!));
   }
+}
+
+function explainKey(taskId: string, index: number): string {
+  return `${taskId}#${index}`;
 }
 
 function errorText(err: unknown): string {

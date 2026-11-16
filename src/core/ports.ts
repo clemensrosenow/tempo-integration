@@ -31,6 +31,13 @@ export interface EventsDelta {
 export interface CalendarPort {
   /** Email of the connected user (primary calendar id). */
   getUserEmail(): Promise<string>;
+  /**
+   * Whether invitations from senders the user doesn't know (like the Tempo
+   * organizer) appear in their calendar. 'hidden-unknown' means Tempo's
+   * questions stay invisible until the user changes the setting or adds the
+   * organizer to their contacts. Optional; 'unknown' if it cannot be read.
+   */
+  invitationVisibility?(): Promise<'all' | 'hidden-unknown' | 'hidden' | 'unknown'>;
   listCalendars(): Promise<CalendarInfo[]>;
   /** Find the "Tempo" secondary calendar or create it (E2). Returns its id. */
   ensureTempoCalendar(timeZone: string): Promise<string>;

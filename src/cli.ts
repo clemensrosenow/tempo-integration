@@ -24,6 +24,7 @@ import { FileStateStore } from './store/fileStore.js';
 import { TempoEngine, errorMessage, type TickReport } from './engine/engine.js';
 import { confirmSetup, describeProposal, proposeSetup, type SetupOverrides } from './engine/setup.js';
 import { startDaemon } from './engine/daemon.js';
+import { isLapsed, LAPSED_AFTER_DAYS } from './core/pipeline.js';
 import type { CalendarInfo, DailyWindow, IsoWeekday } from './core/types.js';
 import {
   readSettings,
@@ -119,6 +120,7 @@ async function main(argv: string[]): Promise<void> {
       };
       const proposal = await proposeSetup(g.calendar, new Date(), overrides);
       console.log(describeProposal(proposal));
+      await warnInvitationVisibility(g.calendar, g.organizerEmail);
       if (!values.yes && !(await confirm('\nUse these settings? [Y/n] '))) {
         console.log('Nothing saved. Re-run with overrides, e.g. --working-hours 08:00-17:00');
         return;
@@ -165,8 +167,19 @@ async function main(argv: string[]): Promise<void> {
       const tz = state.prefs.timezone;
       const fmt = (d: Date | string) => DateTime.fromJSDate(new Date(d)).setZone(tz).toFormat('ccc dd LLL HH:mm');
       console.log(`Account: ${state.userEmail}   Tempo calendar: ${state.tempoCalendarId}`);
-      console.log(describeSettings(settingsFromPrefs(state.prefs)));
+      const file = await readSettings(config.settingsFile);
+      console.log(describeSettings(file.kind === 'ok' ? file.settings : settingsFromPrefs(state.prefs)));
+      if (file.kind === 'invalid') console.log(`! ${file.error} — using the previous settings`);
       console.log(`Last plan: ${state.lastPlanAt ? fmt(state.lastPlanAt) : 'never'}`);
+      const ga = await adapters();
+      await warnInvitationVisibility(ga.calendar, ga.organizerEmail);
+      const lapsed = (await ga.tasks.listTasks({ completedSinceDays: 0 })).filter(
+        (t) => t.status !== 'completed' && isLapsed(t.due, new Date()),
+      );
+      if (lapsed.length > 0) {
+        console.log(`\nNot planned — overdue by more than ${LAPSED_AFTER_DAYS} days (give them a new due date to plan them):`);
+        for (const t of lapsed) console.log(`  - ${t.title} (was due ${fmt(new Date(t.due!.getTime() - 1)).slice(0, 10)})`);
+      }
       const open = state.questions.filter((q) => q.status === 'open' || q.status === 'queued');
       console.log(`\nQuestions (${open.length}):`);
       for (const q of open) console.log(`  [${q.status}] ${q.title} @ ${fmt(q.slot.start)} (answer by ${fmt(q.answerBy)})`);
@@ -421,6 +434,25 @@ function printReport(r: TickReport): void {
   }
   for (const f of r.failed) console.log(`  ! ${f.change.op} failed: ${f.error}`);
   for (const q of r.questionsOpened) console.log(`  ? ${q.title}`);
+}
+
+async function warnInvitationVisibility(
+  calendar: { invitationVisibility?(): Promise<string> },
+  organizerEmail: string | undefined,
+): Promise<void> {
+  if (!organizerEmail || !calendar.invitationVisibility) return;
+  const v = await calendar.invitationVisibility().catch(() => 'unknown');
+  if (v !== 'hidden-unknown' && v !== 'hidden') return;
+  console.log(
+    [
+      '',
+      `! Your Google Calendar hides invitations from ${v === 'hidden' ? 'everyone you have not answered' : 'unknown senders'}, so`,
+      `  Tempo's questions ("Tempo asks: …" from ${organizerEmail}) would only arrive by e-mail.`,
+      `  Fix one of these, then questions appear in your calendar:`,
+      `    - Google Calendar → Settings → General → Event settings → "Add invitations to my calendar" → "From everyone"`,
+      `    - or add ${organizerEmail} to your Google Contacts (it then counts as a known sender)`,
+    ].join('\n'),
+  );
 }
 
 function describeError(err: unknown): string {

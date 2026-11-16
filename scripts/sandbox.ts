@@ -157,6 +157,8 @@ async function seed(c: Clients): Promise<void> {
   await task(defaultList, { title: 'Tax return 2025', due: due(today.minus({ days: 190 })) });
   await task(defaultList, { title: 'Renew library books', status: 'completed', due: due(today.minus({ days: 2 })) });
 
+  // New calendars start out shown; hide Sport now that Google has settled.
+  await cal.calendarList.patch({ calendarId: sport, requestBody: { selected: false } });
   await saveLedger(ledger);
   console.log(`Seeded ${ledger.calendars.length} calendars, ${ledger.events.length} events, ${ledger.tasks.length} tasks for ${c.email}.`);
 }
@@ -341,7 +343,14 @@ async function act(c: Clients, action: string | undefined, args: string[]): Prom
       const map = { yes: 'accepted', no: 'declined', maybe: 'tentative' } as const;
       const answer = map[args[0] as keyof typeof map];
       if (!answer) throw new Error('rsvp yes|no|maybe');
-      const { e } = await findEvent(c, 'Tempo asks:', { calendarId: 'primary' });
+      // Invitations from unknown senders may be hidden from events.list, so
+      // look the open question up by id (Tempo's state) and fetch it directly.
+      const state = JSON.parse(await fs.readFile(path.join(config.dataDir, 'state.json'), 'utf8')) as {
+        questions: Array<{ status: string; inviteEventId?: string }>;
+      };
+      const open = state.questions.find((q) => q.status === 'open' && q.inviteEventId);
+      if (!open) throw new Error('No open Tempo question.');
+      const e = (await cal.events.get({ calendarId: 'primary', eventId: open.inviteEventId! })).data;
       const attendees = (e.attendees ?? []).map((a) => (a.self ? { ...a, responseStatus: answer } : a));
       await cal.events.patch({ calendarId: 'primary', eventId: e.id!, requestBody: { attendees } });
       console.log(`Answered "${e.summary}" with ${args[0]}.`);

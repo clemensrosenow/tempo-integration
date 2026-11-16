@@ -266,6 +266,8 @@ export interface Question {
 export type Signal =
   | { type: 'initial' }
   | { type: 'periodic' }
+  /** The user changed settings (working hours, busy calendars …): re-place everything that no longer fits. */
+  | { type: 'settings-changed' }
   | { type: 'tasks-changed'; taskIds: string[] }
   | { type: 'task-completed'; taskId: string }
   | { type: 'fixed-event-changed'; eventId: string }

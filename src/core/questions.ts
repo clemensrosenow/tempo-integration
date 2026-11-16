@@ -143,6 +143,14 @@ function optionSlot(o: PlacementOption): TimeRange | undefined {
   return sortRanges(o.blocks).sort((a, b) => a.end.getTime() - b.end.getTime()).at(-1);
 }
 
+/** "today 17:05", "tomorrow 09:00" or "Thu 19 Nov 15:50". */
+export function relativeWhen(d: Date, now: Date, tz: string): string {
+  const days = localDayDiff(now, d, tz);
+  if (days === 0) return `today ${formatLocal(d, tz, 'HH:mm')}`;
+  if (days === 1) return `tomorrow ${formatLocal(d, tz, 'HH:mm')}`;
+  return formatLocal(d, tz);
+}
+
 /** "1 day late", "3 h late" or "only 60 of 120 min before due". */
 export function lateText(item: PlanItem, o: PlacementOption, tz: string): string {
   const slot = optionSlot(o);
@@ -183,12 +191,18 @@ export function buildMissedDueQuestion(a: MissedDueArgs): Question | undefined {
   if (!primary || !slot) return undefined;
   const title = a.item.title;
   const dueText = a.item.due ? formatLocalDay(addMinutes(a.item.due, -1), tz) : 'its due date';
+  // Already overdue: there is no "before the due" any more, only "when now".
+  const overdue = a.item.due !== undefined && a.item.due.getTime() <= a.now.getTime();
   return makeQuestion({
     kind: 'missed-due',
     item: a.item,
     now: a.now,
-    titleBody: `${title} ${lateText(a.item, primary, tz)}?`,
-    reason: `'${title}' doesn't fit before its due (${dueText}). Proposed: ${describeRange(slot, tz)}.`,
+    titleBody: overdue
+      ? `${title} is overdue. Do it ${relativeWhen(slot.start, a.now, tz)}?`
+      : `${title} ${lateText(a.item, primary, tz)}?`,
+    reason: overdue
+      ? `'${title}' was due ${dueText} and isn't checked off. Proposed: ${describeRange(slot, tz)}.`
+      : `'${title}' doesn't fit before its due (${dueText}). Proposed: ${describeRange(slot, tz)}.`,
     slot,
     proposal: createsFor(a.item, title, primary.blocks),
     alternatives: rest.slice(0, 3).map((o) => {

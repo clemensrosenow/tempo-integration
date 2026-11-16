@@ -58,6 +58,12 @@ export interface GreedyInput {
   pinned?: readonly TaskBlock[];
   /** End of the planning horizon (defaults to the end of the last gap). */
   horizonEnd?: Date;
+  /**
+   * Conservative mode: keep every still-valid existing block first (no
+   * "urgent work moves into today" exception), then fill the remaining need.
+   * Used to avoid a big re-plan when the new demand fits around the plan.
+   */
+  keepExistingFirst?: boolean;
 }
 
 export interface GreedyResult {
@@ -131,6 +137,12 @@ class GreedyPlacer {
     const groups = this.orderedGroups();
     const urgent = groups.filter((g) => g.some((s) => isUrgent(s.item, this.input.now, this.tz)));
     const normal = groups.filter((g) => !urgent.includes(g));
+
+    if (this.input.keepExistingFirst) {
+      for (const group of groups) for (const state of group) this.reserveExisting(state, false);
+      for (const group of [...urgent, ...normal]) for (const state of group) this.placeRemaining(state, group);
+      return this.result();
+    }
 
     for (const group of urgent) {
       for (const state of group) {

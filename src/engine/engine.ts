@@ -175,9 +175,9 @@ export class TempoEngine {
     // 5. Decide whether to plan at all ----------------------------------------
     // Settings edited (working hours, busy calendars …): re-plan everything now.
     const prefsKey = planningPrefsKey(prefs);
-    if (state.prefsKey !== undefined && state.prefsKey !== prefsKey && signals.length === 0) {
+    if (state.prefsKey !== undefined && state.prefsKey !== prefsKey) {
       say('settings changed: re-planning');
-      signals.push({ type: 'periodic' });
+      signals.push({ type: 'settings-changed' });
     }
     state.prefsKey = prefsKey;
     const periodicMs = config.periodicReplanMs ?? 15 * 60_000;

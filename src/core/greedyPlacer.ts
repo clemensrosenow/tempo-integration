@@ -351,25 +351,43 @@ class GreedyPlacer {
 
   private result(): GreedyResult {
     const placements: Placement[] = [];
-    const late: string[] = [];
-    const dropped: string[] = [];
-    const unplacedMin: Record<string, number> = {};
-    for (const { item, blocks, remaining } of this.states.values()) {
-      for (const b of sortRanges(blocks)) placements.push({ taskId: item.taskId, start: b.start, end: b.end });
-      if (remaining > 0) unplacedMin[item.taskId] = remaining;
-      if (item.needMin > 0 && blocks.length === 0) {
-        dropped.push(item.taskId);
-        continue;
-      }
-      const due = item.due;
-      if (!due) continue;
-      const endsLate = blocks.some((b) => b.end.getTime() > due.getTime());
-      const cannotFinish = remaining > 0 && due.getTime() <= this.horizonEnd.getTime();
-      if (endsLate || cannotFinish) late.push(item.taskId);
+    for (const { item, blocks } of this.states.values()) {
+      for (const b of blocks) placements.push({ taskId: item.taskId, start: b.start, end: b.end });
     }
-    placements.sort((a, b) => a.start.getTime() - b.start.getTime() || cmp(a.taskId, b.taskId));
-    return { placements, late, dropped, unplacedMin };
+    return assessPlacements(this.input.items, placements, this.horizonEnd);
   }
+}
+
+/**
+ * Classify a complete placement (greedy or LLM): late tasks (end after due, or
+ * cannot finish before a due inside the horizon), dropped tasks (nothing
+ * placed) and unplaced minutes.
+ */
+export function assessPlacements(
+  items: readonly PlanItem[],
+  placements: readonly Placement[],
+  horizonEnd: Date,
+): GreedyResult {
+  const late: string[] = [];
+  const dropped: string[] = [];
+  const unplacedMin: Record<string, number> = {};
+  for (const item of items) {
+    const blocks = placements.filter((p) => p.taskId === item.taskId);
+    const placed = blocks.reduce((s, b) => s + durationMin(b), 0);
+    const remaining = Math.max(0, item.needMin - placed);
+    if (remaining > 0) unplacedMin[item.taskId] = remaining;
+    if (item.needMin > 0 && blocks.length === 0) {
+      dropped.push(item.taskId);
+      continue;
+    }
+    const due = item.due;
+    if (!due) continue;
+    const endsLate = blocks.some((b) => b.end.getTime() > due.getTime());
+    const cannotFinish = remaining > 0 && due.getTime() <= horizonEnd.getTime();
+    if (endsLate || cannotFinish) late.push(item.taskId);
+  }
+  const sorted = [...placements].sort((a, b) => a.start.getTime() - b.start.getTime() || cmp(a.taskId, b.taskId));
+  return { placements: sorted, late, dropped, unplacedMin };
 }
 
 /**

@@ -209,12 +209,15 @@ export class TempoEngine {
     state.estimates = { ...state.estimates, ...output.estimates };
     if (output.learned) prefs.learned = output.learned;
     report.questionsClosed = await this.closeQuestions(state, output.updatedQuestions, now, say);
+    // The pipeline marks the most severe new question 'open' ("send now"); the
+    // engine sends it only after a successful invitation, so it is queued first.
+    const preferred = new Set(output.questions.filter((q) => q.status === 'open').map((q) => q.id));
     for (const q of output.questions) {
       if (!state.questions.some((existing) => existing.id === q.id)) {
         state.questions.push({ ...q, status: q.status === 'open' ? 'queued' : q.status });
       }
     }
-    const opened = await this.openNextQuestion(state, tempoCalendarId, userEmail, now, say);
+    const opened = await this.openNextQuestion(state, tempoCalendarId, userEmail, now, say, preferred);
     if (opened) report.questionsOpened.push(opened);
 
     // 9. Snapshot after our own writes, so they are not mistaken for user edits.
@@ -364,11 +367,16 @@ export class TempoEngine {
     userEmail: string,
     now: Date,
     say: (l: string) => void,
+    preferred: Set<string> = new Set(),
   ): Promise<Question | undefined> {
     if (state.questions.some((q) => q.status === 'open')) return undefined;
     const queue = state.questions
       .filter((q) => q.status === 'queued')
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      .sort(
+        (a, b) =>
+          Number(preferred.has(b.id)) - Number(preferred.has(a.id)) ||
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
     for (const q of queue) {
       if (new Date(q.answerBy).getTime() <= now.getTime()) {
         q.status = 'expired';
@@ -424,8 +432,9 @@ export function rsvpToAnswer(r: ResponseStatus): 'yes' | 'no' | 'maybe' | undefi
 function latestUserEdit(events: CalendarEvent[], tasks: Task[], since?: string): Date | undefined {
   const sinceMs = since ? new Date(since).getTime() : 0;
   let latest = 0;
-  for (const e of events) if (e.updated.getTime() > sinceMs) latest = Math.max(latest, e.updated.getTime());
-  for (const t of tasks) if (t.updated.getTime() > sinceMs) latest = Math.max(latest, t.updated.getTime());
+  // `>=`: an edit in the same millisecond as the previous snapshot still counts.
+  for (const e of events) if (e.updated.getTime() >= sinceMs) latest = Math.max(latest, e.updated.getTime());
+  for (const t of tasks) if (t.updated.getTime() >= sinceMs) latest = Math.max(latest, t.updated.getTime());
   return latest > 0 ? new Date(latest) : undefined;
 }
 

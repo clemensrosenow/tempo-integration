@@ -89,7 +89,7 @@ export function estimateTask(t: UnderstandTask, now: Date): TaskEstimate {
     // A subtask is one atomic step of a bigger task.
     if (t.parentId) durationMin = Math.min(durationMin, 90);
   }
-  durationMin = clampInt(Math.round(durationMin / 5) * 5, 5, 8 * 60);
+  durationMin = clampInt(Math.round(durationMin / 5) * 5, 5, 40 * 60);
 
   const deepWork = category?.deepWork ?? false;
   const minChunkMin = durationMin <= 60 ? durationMin : Math.min(durationMin, deepWork ? 60 : 30);
@@ -139,7 +139,8 @@ function explicitDuration(text: string): number | undefined {
   const value = Number(m[1].replace(',', '.'));
   if (!Number.isFinite(value) || value <= 0) return undefined;
   const minutes = /^(h|hr|hrs|hour|hours|std|stunde|stunden)$/.test(m[2]) ? value * 60 : value;
-  return minutes >= 5 && minutes <= 8 * 60 ? minutes : undefined;
+  // Up to 40 h: multi-day student work (thesis chapter, exam prep) is common.
+  return minutes >= 5 && minutes <= 40 * 60 ? Math.round(minutes) : undefined;
 }
 
 function urgencyFor(due: Date | undefined, now: Date, text: string): number {

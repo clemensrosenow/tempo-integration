@@ -31,7 +31,7 @@ const MAX_NOTES_CHARS = 2000;
 export const UNDERSTAND_SYSTEM = `You are the task-understanding step of Tempo, an assistant that plans a university student's Google Tasks as time blocks in Google Calendar.
 
 For every task, estimate:
-- durationMin: total remaining focused work in minutes (integer, 5-480). For a task with subtasks, estimate the whole task.
+- durationMin: total remaining focused work in minutes (integer, 5-2400). For a task with subtasks, estimate the whole task.
 - priority: 1 (low) to 5 (critical: exams, graded or hard deadlines, things others depend on).
 - urgency: 1 (can wait) to 5 (must happen today), mostly from the due date relative to now.
 - confidence: 0 to 1, how sure you are about the priority. Go below 0.5 only if the title is too vague to judge importance; Tempo will then ask the user.
@@ -111,7 +111,7 @@ export function parseUnderstand(raw: unknown, req: UnderstandRequest): Map<strin
   for (const e of parsed.estimates) {
     if (!wanted.has(e.taskId) || out.has(e.taskId)) continue;
     if (![e.durationMin, e.priority, e.urgency, e.confidence, e.minChunkMin].every(Number.isFinite)) continue;
-    const durationMin = clampInt(e.durationMin, 5, 8 * 60);
+    const durationMin = clampInt(e.durationMin, 5, 40 * 60);
     out.set(e.taskId, {
       taskId: e.taskId,
       durationMin,

@@ -189,7 +189,9 @@ export async function runPlanningPipeline(input: PlanInput, llm: LlmPort): Promi
     prefs: run.prefs,
     horizonDays: input.horizonDays,
     frozenTaskIds: frozen,
-    reserved: [...pinned, ...questionReservations(run)],
+    // The open question's proposal may cover blocks of later work (they make
+    // room only on Yes). Those blocks stay valid; only the rest is reserved.
+    reserved: [...pinned, ...subtractRanges(questionReservations(run), current.filter((b) => b.status === 'movable'))],
   });
   const movable = current.filter((b) => b.status === 'movable');
   const horizonEnd = addMinutes(run.now, input.horizonDays * 24 * 60);
@@ -244,7 +246,7 @@ export async function runPlanningPipeline(input: PlanInput, llm: LlmPort): Promi
   }
 
   const taskQuestions: Question[] = [
-    ...missedIds.flatMap((id) => missedDueQuestion(run, itemById.get(id)!, { gaps, target, heldBlocks, pinned, items, horizonEnd })),
+    ...missedIds.flatMap((id) => missedDueQuestion(run, itemById.get(id)!, { gaps, target, heldBlocks, pinned, items, horizonEnd, movable })),
     ...droppedIds.map((id) =>
       buildDroppedQuestion({
         now: run.now,
@@ -299,6 +301,7 @@ export async function runPlanningPipeline(input: PlanInput, llm: LlmPort): Promi
     current: finalCurrent,
     taskQuestions,
     cause: globalCause(run.input.signals),
+    acceptedRanges: run.virtualPinned,
     ...(run.openQuestion ? { openQuestion: run.openQuestion } : {}),
     ...(run.followUp ? { followUp: run.followUp } : {}),
     queuedQuestions: input.queuedQuestions,
@@ -735,12 +738,24 @@ interface OptionArgs {
   pinned: TaskBlock[];
   items: PlanItem[];
   horizonEnd: Date;
+  /** Movable blocks as they are in the calendar now. */
+  movable: CurrentBlock[];
 }
 
 function missedDueQuestion(run: Run, item: PlanItem, a: OptionArgs): Question[] {
   const own = a.heldBlocks.filter((b) => b.taskId === item.taskId);
   const otherHeld = a.heldBlocks.filter((b) => b.taskId !== item.taskId);
-  const free = subtractRanges(a.gaps, [...a.target, ...otherHeld]);
+  // Work that is due later (or has no due) and isn't urgent may make room: on
+  // Yes it is re-placed around the accepted blocks. Without this the only
+  // options would be "far too late" whenever the week is already planned.
+  const itemById = new Map(a.items.map((i) => [i.taskId, i]));
+  const yields = (p: Placement): boolean => {
+    const other = itemById.get(p.taskId);
+    if (!other || !item.due || other.urgency >= 4) return false;
+    if (other.orderGroup !== undefined && other.orderGroup === item.orderGroup) return false;
+    return !other.due || other.due.getTime() > item.due.getTime();
+  };
+  const free = subtractRanges(a.gaps, [...a.target.filter((p) => !yields(p)), ...otherHeld]);
   const peers = a.items
     .filter((i) => i.taskId !== item.taskId && i.orderGroup !== undefined && i.orderGroup === item.orderGroup)
     .map((i) => ({ ...i, needMin: 0 }));
@@ -762,7 +777,15 @@ function missedDueQuestion(run: Run, item: PlanItem, a: OptionArgs): Question[] 
     const last = [...blocks].sort((x, y) => x.end.getTime() - y.end.getTime()).at(-1)!;
     avoid.push(last);
   }
-  const q = buildMissedDueQuestion({ now: run.now, prefs: run.prefs, item, options, replaced: own });
+  const firstBlocks = options[0]?.blocks ?? [];
+  const displaced = [
+    ...new Set(
+      [...a.movable, ...a.target]
+        .filter((p) => yields(p) && firstBlocks.some((b) => overlaps(b, p)))
+        .map((p) => run.tasks.get(p.taskId)?.title ?? p.taskId),
+    ),
+  ];
+  const q = buildMissedDueQuestion({ now: run.now, prefs: run.prefs, item, options, replaced: own, displaced });
   if (!q) run.log.push(`missed-due for ${item.taskId}: no option at least 2 h ahead → keeping its blocks, not asking yet`);
   return q ? [q] : [];
 }

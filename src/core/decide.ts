@@ -74,6 +74,11 @@ export interface DecideInput {
   taskQuestions: readonly Question[];
   /** Machine cause of this re-plan (for the big-change text). */
   cause: string;
+  /**
+   * Ranges the user just accepted by answering Yes. Moves of blocks out of
+   * these ranges are part of that decision, not a new big change.
+   */
+  acceptedRanges?: readonly { start: Date; end: Date }[];
   /** Question that stays open after this run (not answered now). */
   openQuestion?: Question;
   /** Maybe follow-up that the engine opens next. */
@@ -95,7 +100,12 @@ export function decide(input: DecideInput): DecideOutput {
   const candidates: Question[] = [...input.taskQuestions];
   let apply = input.planned;
 
-  const big = detectBigChange(input.planned);
+  const accepted = input.acceptedRanges ?? [];
+  const big = detectBigChange(
+    input.planned.filter(
+      (c) => !(c.op === 'move' && accepted.some((r) => r.start.getTime() < c.from.end.getTime() && c.from.start.getTime() < r.end.getTime())),
+    ),
+  );
   if (big) {
     apply = [];
     const q = bigChangeQuestion(input, big);

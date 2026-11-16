@@ -137,6 +137,8 @@ export interface MissedDueArgs {
   options: readonly PlacementOption[];
   /** Movable current blocks of the task (hidden while the question is open). */
   replaced: readonly CurrentBlock[];
+  /** Titles of later work that moves to make room if the user says Yes. */
+  displaced?: readonly string[];
 }
 
 function optionSlot(o: PlacementOption): TimeRange | undefined {
@@ -191,6 +193,11 @@ export function buildMissedDueQuestion(a: MissedDueArgs): Question | undefined {
   if (!primary || !slot) return undefined;
   const title = a.item.title;
   const dueText = a.item.due ? formatLocalDay(addMinutes(a.item.due, -1), tz) : 'its due date';
+  // Fits completely before the due — only because later work makes room.
+  const onTime = (o: PlacementOption) => {
+    const end = optionSlot(o)?.end;
+    return a.item.due !== undefined && end !== undefined && end.getTime() <= a.item.due.getTime() && o.unplacedMin === 0;
+  };
   // Already overdue: there is no "before the due" any more, only "when now".
   const overdue = a.item.due !== undefined && a.item.due.getTime() <= a.now.getTime();
   return makeQuestion({
@@ -199,15 +206,26 @@ export function buildMissedDueQuestion(a: MissedDueArgs): Question | undefined {
     now: a.now,
     titleBody: overdue
       ? `${title} is overdue. Do it ${relativeWhen(slot.start, a.now, tz)}?`
-      : `${title} ${lateText(a.item, primary, tz)}?`,
-    reason: overdue
-      ? `'${title}' was due ${dueText} and isn't checked off. Proposed: ${describeRange(slot, tz)}.`
-      : `'${title}' doesn't fit before its due (${dueText}). Proposed: ${describeRange(slot, tz)}.`,
+      : onTime(primary)
+        ? `Make room for ${title} before ${dueText}?`
+        : `${title} ${lateText(a.item, primary, tz)}?`,
+    reason:
+      (overdue
+        ? `'${title}' was due ${dueText} and isn't checked off. Proposed: ${describeRange(slot, tz)}.`
+        : onTime(primary)
+          ? `'${title}' only fits before its due (${dueText}) if other work moves. Proposed: ${describeRange(slot, tz)}.`
+          : `'${title}' doesn't fit before its due (${dueText}). Proposed: ${describeRange(slot, tz)}.`) +
+      (a.displaced?.length ? ` To make room, Tempo moves ${a.displaced.map((t) => `'${t}'`).join(', ')} to later.` : ''),
     slot,
     proposal: createsFor(a.item, title, primary.blocks),
     alternatives: rest.slice(0, 3).map((o) => {
       const altSlot = optionSlot(o)!;
-      return { slot: altSlot, proposal: createsFor(a.item, title, o.blocks), summary: `${title} ${lateText(a.item, o, tz)}` };
+      const summary = overdue
+        ? `${title} is overdue. Do it ${relativeWhen(altSlot.start, a.now, tz)}`
+        : onTime(o)
+          ? `Make room for ${title} before ${dueText}`
+          : `${title} ${lateText(a.item, o, tz)}`;
+      return { slot: altSlot, proposal: createsFor(a.item, title, o.blocks), summary };
     }),
     replaced: a.replaced,
   });
@@ -373,7 +391,8 @@ function answerYes(q: Question, ctx: AnswerContext): AnswerResult {
   }
   return {
     updated: { ...q, status: 'yes' },
-    changes: notStarted(q.proposal, ctx.now).map((c) => withDefaultReason(c, 'You said Yes to Tempo’s proposal.')),
+    // The proposal's own reason was written when Tempo asked; now the cause is the answer.
+    changes: notStarted(q.proposal, ctx.now).map((c) => withReason(c, `You said Yes to “${q.title.slice(QUESTION_PREFIX.length)}”`)),
     learnedChanged,
     estimatesChanged: false,
     log,
@@ -454,6 +473,11 @@ function notStarted(changes: readonly EventChange[], now: Date): EventChange[] {
     const start = c.op === 'create' ? c.block.start : c.op === 'move' ? c.to.start : undefined;
     return !start || start.getTime() >= now.getTime();
   });
+}
+
+function withReason(c: EventChange, reason: string): EventChange {
+  if (c.op === 'create') return { ...c, block: { ...c.block, reason } };
+  return { ...c, reason };
 }
 
 function withDefaultReason(c: EventChange, reason: string): EventChange {

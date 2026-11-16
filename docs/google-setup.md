@@ -119,3 +119,21 @@ webhook address. Channels expire and Tempo creates new ones when it restarts.
 | `No Google OAuth client found` | `.tempo/credentials.json` is missing, or `GOOGLE_CLIENT_ID` is not set. |
 | `Google Calendar API has not been used in project …` | Enable the API (step 2) and wait a minute. |
 | No invitations arrive | Check that the organizer is logged in (`tempo login --organizer`) and is a different account. |
+
+## 6. Make Tempo's questions visible in your calendar
+
+Tempo asks questions as invitations from the organizer account. Many Google accounts only add
+invitations from **known senders** to the calendar (Google Calendar → Settings → General → Event
+settings → "Add invitations to my calendar"). Then "Tempo asks: …" only arrives by e-mail.
+`tempo setup` and `tempo status` check this (Calendar API setting `hideInvitationsSetting`) and warn.
+Fix it with one of:
+
+- set "Add invitations to my calendar" to **From everyone**, or
+- add the organizer account to your Google Contacts (it then counts as a known sender).
+
+## 7. (Developers) Sandbox account for live experiments
+
+`scripts/sandbox.ts` fills a **test** account with sample calendars, events and tasks and simulates
+user actions (see the README). It signs in separately with full Calendar and Tasks access
+(`npm run sandbox -- login`, token `.tempo/tokens/sandbox.json`) and only writes to that account,
+and only if it is the same account Tempo itself is signed in with. Never use it with your real account.

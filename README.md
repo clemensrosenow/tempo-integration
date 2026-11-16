@@ -58,7 +58,30 @@ from an organizer different from the attendee).
    npm run tempo -- run
    ```
 
-Other commands: `plan [--force]`, `status`, `tasks`, `calendars`, `clear-blocks`, `logout [--organizer]`.
+Other commands: `plan [--force]`, `status`, `tasks`, `prefs`, `calendars`, `clear-blocks`, `logout [--organizer]`.
+
+### Settings: working hours and busy calendars
+
+`tempo setup` writes [`tempo.json`](tempo.example.json) (git-ignored). It is the place to change your
+working hours, focus time, sleep, buffer and which calendars count as busy, at any time. A running
+Tempo re-reads it on every check and re-plans when something changed; no restart, no new setup.
+
+```bash
+npm run tempo -- prefs                              # show
+npm run tempo -- prefs hours mon-thu 09:00-20:00    # per weekday; "off" for free days
+npm run tempo -- prefs hours fri 09:00-14:00
+npm run tempo -- prefs focus 15:00-18:00
+npm run tempo -- prefs sleep 23:30-07:00
+npm run tempo -- prefs buffer 10
+npm run tempo -- calendars                          # which calendars count as busy
+npm run tempo -- calendars remove "Sport"
+npm run tempo -- calendars add "Uni"
+npm run tempo -- calendars reset                    # = the calendars checked in Google Calendar's sidebar
+```
+
+Initially, the busy calendars are exactly the ones you show (checkbox ticked) in Google Calendar's
+sidebar; holiday and birthday calendars are skipped. Editing `tempo.json` by hand works too; an
+invalid file is reported once and the last valid settings stay in use.
 
 ### LLM
 
@@ -76,6 +99,20 @@ back to the deterministic path.
 - **Running late:** extend the meeting in your calendar → following blocks move; the next hour stays as is.
 - **Correct Tempo:** drag or resize a block → it stays where you put it and the description says what Tempo learned.
 - **Decisions:** for missed due dates, dropped tasks, unclear priority or big changes (>3 blocks / >2 days) you get an invitation "Tempo asks: …" at the proposed slot. Yes = apply · No = keep as is · Maybe = other time. No answer 1 h before the slot = No.
+
+## Trying it live (sandbox)
+
+For experiments, use a separate **test** Google account (sign Tempo in with it via `tempo login`):
+
+```bash
+npm run sandbox -- login        # same test account, grants write access for sample data
+npm run sandbox -- seed         # a realistic student week: lectures, job, hidden "Sport" calendar, 12 tasks
+npm run tempo -- setup --yes
+TEMPO_POLL_INTERVAL_SEC=20 TEMPO_DEBOUNCE_MS=30000 npm run tempo -- run   # faster loop for experiments
+npm run sandbox -- act help     # extend a meeting, drag/resize/delete blocks, complete/add/edit tasks, RSVP …
+npm run sandbox -- blocks       # Tempo blocks with their reason line
+npm run sandbox -- reset        # remove all sample data and the Tempo calendar
+```
 
 ## Development
 

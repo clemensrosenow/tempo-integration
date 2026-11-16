@@ -21,6 +21,13 @@ Each module also lists its decisions in a top-of-file comment.
   - A drag adds affinity for that hour of day.
   - Either way the block stays where you put it, and its description gets a "Tempo learned: …" line.
   - A block that ends while its task is still open nudges the scale up.
+- **Lapsed tasks.** A task overdue by more than 7 days is an old, forgotten to-do: it is not planned and raises no question. `tempo status` lists such tasks; a new due date brings them back. (Found live: a 190-day-old task produced an invitation.)
+- **Stability first.** When a re-plan would move existing blocks, Tempo first tries to fit the new demand around the current plan. It only moves blocks (and only asks about a big change) if that would leave a task late or unplanned. (Found live: one new 30-min task moved four exam blocks by up to 6 days.)
+- **Back-to-back blocks merge.** Adjacent blocks of one task become one block.
+- **Missed-due options may take time from later work.** Work that is due later (or has no due) and isn't urgent may make room: the question says "To make room, Tempo moves '…' to later". Those blocks only move on Yes; while the question is open they stay. If the proposal is on time, the question reads "Make room for X before <due>?"; for an already overdue task "X is overdue. Do it today 16:50?".
+- **Not big changes:** moves that follow from a Yes answer, moves of tasks the user just edited (e.g. due pulled earlier), and "rescue" moves that bring a block from after its due to before it.
+- **Accepted lateness is explicit.** Blocks after the due are only kept without asking when the user answered Yes to a late proposal for exactly that due (`learned.acceptedLate`); a changed due date voids it.
+- **Deleting a block means "not there".** The task is re-planned elsewhere in that run.
 - **Known literal-spec consequence.** Answering No to a "missed due date" question about a brand-new task leaves it unplanned until you edit the task, because "keep as is" means it had no blocks.
 
 ## Engine (src/engine)
@@ -39,6 +46,12 @@ Each module also lists its decisions in a top-of-file comment.
   - Unanswered ones get a note "No answer … — Tempo kept your plan" (D12).
   - Without a connected organizer account, questions expire immediately. That counts as No, which is the safe default.
 - **Change detection.** Polling every 60 s always runs, because Google Tasks has no push notifications. Calendar push via `events.watch` is optional (`TEMPO_WEBHOOK_URL`), needs a public HTTPS URL, and channels are renewed before they expire.
+
+- **Settings file.** `tempo.json` (written by setup) holds working hours per weekday, focus, sleep, buffer and busy calendars. The engine re-reads it every tick (`SettingsStore`) and re-plans on change (signal `settings-changed`). An invalid file keeps the last valid settings and is reported once.
+- **Busy calendars.** Initially the calendars shown in Google Calendar's sidebar (`selected && !hidden`), minus holiday/birthday calendars; afterwards `tempo calendars add|remove|reset`. Note: a calendar you hide for visual reasons (e.g. sport) is then not busy time; add it back if it should be.
+- **Account switch.** Running setup with another Google account starts from a clean state; `plan`/`run` refuse to run with a different signed-in account.
+- **Hidden invitations.** Google accounts that only accept invitations from known senders never show "Tempo asks: …" in the calendar (found live). Setup and status detect `hideInvitationsSetting` and say how to fix it.
+- **Reasons per change.** Explanations are keyed per change, so a move and a delete of the same task keep their own text.
 
 ## LLM (src/llm)
 

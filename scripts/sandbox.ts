@@ -8,6 +8,7 @@
  *   npm run sandbox -- seed                  create the sample week (idempotent: reset first)
  *   npm run sandbox -- reset                 delete everything the sandbox created (+ Tempo blocks)
  *   npm run sandbox -- show                  events (7 days) and tasks as the test account sees them
+ *   npm run sandbox -- blocks [days]         Tempo blocks with the reason line Tempo wrote
  *   npm run sandbox -- act <action> …        simulate a user action (see `act help`)
  *
  * Safety: only ever writes to the account recorded at `sandbox login`, and only
@@ -214,6 +215,25 @@ async function show(c: Clients): Promise<void> {
   }
 }
 
+async function blocks(c: Clients, days: number): Promise<void> {
+  const entry = ((await c.cal.calendarList.list({ maxResults: 250 })).data.items ?? []).find((k) => k.description?.includes('[tempo-calendar]'));
+  if (!entry) throw new Error('No Tempo calendar yet; run `npm run tempo -- setup`.');
+  const items = (
+    await c.cal.events.list({
+      calendarId: entry.id!,
+      timeMin: now().toISO()!,
+      timeMax: now().plus({ days }).toISO()!,
+      singleEvents: true,
+      orderBy: 'startTime',
+    })
+  ).data.items ?? [];
+  for (const e of items) {
+    const s = DateTime.fromISO(e.start!.dateTime!).setZone(TZ);
+    const f = DateTime.fromISO(e.end!.dateTime!).setZone(TZ);
+    console.log(`${s.toFormat('ccc dd HH:mm')}-${f.toFormat('HH:mm')}  ${e.summary}  — ${e.description?.split('\n')[0] ?? ''}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Simulated user actions
 // ---------------------------------------------------------------------------
@@ -399,8 +419,9 @@ async function main(): Promise<void> {
   if (command === 'seed') return seed(c);
   if (command === 'reset') return reset(c);
   if (command === 'show') return show(c);
+  if (command === 'blocks') return blocks(c, Number(args[0] ?? 7));
   if (command === 'act') return act(c, args[0], args.slice(1));
-  console.log('Usage: npm run sandbox -- login | seed | reset | show | act <action> …');
+  console.log('Usage: npm run sandbox -- login | seed | reset | show | blocks [days] | act <action> …');
 }
 
 main().catch((err: unknown) => {

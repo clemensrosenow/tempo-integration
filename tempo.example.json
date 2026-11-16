@@ -1,0 +1,25 @@
+{
+  "timezone": "Europe/Berlin",
+  "workingHours": {
+    "mon": "09:00-18:00",
+    "tue": "09:00-18:00",
+    "wed": "09:00-18:00",
+    "thu": "09:00-18:00",
+    "fri": "09:00-14:00",
+    "sat": "off",
+    "sun": "off"
+  },
+  "focusTime": "09:00-12:00",
+  "sleep": "23:30-07:00",
+  "bufferMinutes": 5,
+  "busyCalendars": [
+    {
+      "name": "you@gmail.com",
+      "id": "you@gmail.com"
+    },
+    {
+      "name": "Uni",
+      "id": "abc123@group.calendar.google.com"
+    }
+  ]
+}

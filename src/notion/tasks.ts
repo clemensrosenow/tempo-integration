@@ -142,7 +142,9 @@ export function parseDuration(value: unknown, unit: TaskMapping['durationUnit'] 
   const amount = composite ? Number(composite[1]) * 60 + Number(composite[2]) : single
     ? Number(single[1]) * ((single[2] ? /^(h|std|stund)/i.test(single[2]) : unit === 'hours') ? 60 : 1)
     : 0;
-  return amount >= 1 && amount <= 2400 ? Math.ceil(amount) : undefined;
+  // An explicit estimate can span several workdays.
+  const maxMinutes = 7 * 24 * 60;
+  return amount >= 1 && amount <= maxMinutes ? Math.ceil(amount) : undefined;
 }
 
 function priority(value: unknown): number | undefined {

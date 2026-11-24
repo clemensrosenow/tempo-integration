@@ -86,6 +86,7 @@ describe('Notion Calendar planner', () => {
   it('interprets duration formats and all-day deadlines in the configured timezone', () => {
     expect(parseDuration('1h 30m')).toBe(90);
     expect(parseDuration('1,5 Std.')).toBe(90);
+    expect(parseDuration(47, 'hours')).toBe(2820);
     expect(parseDuration(-1)).toBeUndefined();
     expect(deadline({ start: '2026-03-30', end: null }, config)?.toISOString()).toBe('2026-03-30T18:00:00.000Z');
     expect(deadline({ start: '2026-11-30T13:30:00+01:00', end: null }, config)?.toISOString()).toBe('2026-11-30T12:30:00.000Z');

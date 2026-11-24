@@ -1,0 +1,19 @@
+{
+  "timezone": "Europe/Berlin",
+  "workingHours": {
+    "mon": "10:00-20:00",
+    "tue": "10:00-20:00",
+    "wed": "10:00-20:00",
+    "thu": "10:00-20:00",
+    "fri": "10:00-20:00",
+    "sat": "off",
+    "sun": "off"
+  },
+  "bufferMinutes": 5,
+  "google": { "calendars": ["primary"] },
+  "notion": {
+    "sessionsParent": "",
+    "createTasksIfMissing": false,
+    "mapping": {}
+  }
+}

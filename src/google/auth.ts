@@ -2,9 +2,10 @@
  * OAuth 2.0 for installed (desktop) apps: loopback redirect on
  * http://127.0.0.1:<random port> + PKCE (S256), via google-auth-library.
  *
- * Two profiles:
+ * Application profiles:
  *  - 'user'      — the student's Google account (reads calendars + tasks, writes the Tempo calendar)
  *  - 'organizer' — a separate "Tempo" Google account that sends question invitations
+ *  - 'notion'    — the Notion planner's read-only calendar availability grant
  *
  * Tokens live in `<dataDir>/tokens/<profile>.json` (mode 0600). Refreshed access
  * tokens are persisted via the client's `tokens` event.
@@ -24,9 +25,10 @@ import { CodeChallengeMethod, OAuth2Client, type Credentials } from 'google-auth
  *   access to a TEST account, to create sample events and tasks. Tempo itself
  *   never uses it.
  */
-export type GoogleProfile = 'user' | 'organizer' | 'sandbox';
+export type GoogleProfile = 'user' | 'organizer' | 'sandbox' | 'notion';
 
 export const SCOPES: Record<GoogleProfile, readonly string[]> = {
+  notion: ['openid', 'email', 'https://www.googleapis.com/auth/calendar.events.freebusy', 'https://www.googleapis.com/auth/calendar.calendarlist.readonly'],
   user: [
     'openid',
     'email',
@@ -43,6 +45,7 @@ const IDENTITY_SCOPES = new Set(['openid', 'email', 'profile']);
 const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
 
 export function loginCommand(profile: GoogleProfile): string {
+  if (profile === 'notion') return 'npm run notion -- login';
   if (profile === 'sandbox') return 'npm run sandbox -- login';
   return profile === 'organizer' ? 'npm run tempo -- login --organizer' : 'npm run tempo -- login';
 }
@@ -50,7 +53,7 @@ export function loginCommand(profile: GoogleProfile): string {
 export class NotSignedInError extends Error {
   constructor(readonly profile: GoogleProfile, detail?: string) {
     super(
-      `Not signed in to Google as the Tempo ${profile === 'organizer' ? 'organizer account' : profile === 'sandbox' ? 'sandbox (test data) account' : 'user'}` +
+      `Not signed in to Google as the Tempo ${profile === 'organizer' ? 'organizer account' : profile === 'sandbox' ? 'sandbox (test data) account' : profile === 'notion' ? 'Notion Calendar user' : 'user'}` +
         `${detail ? ` (${detail})` : ''}. Run \`${loginCommand(profile)}\` first.`,
     );
     this.name = 'NotSignedInError';
@@ -351,7 +354,7 @@ export async function signIn(profile: GoogleProfile, opts: SignInOptions): Promi
     }
     const email = await fetchEmail(client, tokens);
 
-    const other = profile === 'sandbox' ? undefined : await readStoredToken(profile === 'user' ? 'organizer' : 'user', opts.dataDir);
+    const other = profile === 'sandbox' || profile === 'notion' ? undefined : await readStoredToken(profile === 'user' ? 'organizer' : 'user', opts.dataDir);
     if (other?.email && other.email.toLowerCase() === email.toLowerCase()) {
       throw new Error(
         `${email} is already connected as the Tempo ${other.profile}. The organizer must be a different ` +

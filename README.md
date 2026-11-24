@@ -1,5 +1,7 @@
 # Tempo — calendar integration (headless)
 
+Use the [Notion Calendar setup guide](docs/notion-setup.md) for the Notion task integration and the `tempo-notion` command.
+
 Tempo plans your Google Tasks as time blocks in a separate **"Tempo" calendar**
 inside the Google Calendar you already use, and quietly repairs the plan when
 your day slips. There is no UI: every interaction happens through native
